@@ -481,6 +481,8 @@ impl App {
             ui.end_row();
         });
         ui.separator();
+        self.panel_suite(ui);
+        ui.separator();
         ui.horizontal(|ui| {
             let t = if self.atajos_gnome { "Reinstalar atajos de GNOME" } else { "Instalar atajos de GNOME" };
             if ui.button(t).on_hover_text("Crea en Configuración → Teclado los atajos Ctrl+Alt+Espacio (dictar), Ctrl+Alt+C (instrucción) y Ctrl+Alt+L (leer)").clicked() {
@@ -592,6 +594,49 @@ fn ajustes_llm(ui: &mut egui::Ui, id: &str, c: &mut Correccion) -> bool {
 }
 
 impl App {
+    /// Qué ve IureVoz de la suite Iurefficient: apps instaladas, unidades de IureDav y cuenta.
+    fn panel_suite(&mut self, ui: &mut egui::Ui) {
+        use iurefficient_connect::{account, apps};
+        let verde = Color32::from_rgb(60, 160, 60);
+        egui::CollapsingHeader::new(RichText::new("Iurefficient").strong()).default_open(false).show(ui, |ui| {
+            ui.label(RichText::new("Apps de escritorio (se detectan solas, sin configurar)").small().weak());
+            for a in apps::installed() {
+                ui.horizontal(|ui| {
+                    if a.installed {
+                        ui.label(RichText::new(format!("✔ {}", a.name)).color(verde));
+                        ui.label(RichText::new(a.path.unwrap_or_default()).small().weak());
+                    } else {
+                        ui.label(format!("✖ {} no instalada", a.name));
+                        if ui.small_button("Descargar").clicked() {
+                            let _ = std::process::Command::new("gio").args(["open", &a.download_url]).spawn();
+                        }
+                    }
+                });
+            }
+            ui.add_space(4.0);
+            let unidades = apps::iuredav_mounts();
+            if unidades.is_empty() {
+                ui.label(RichText::new("IureDav: sin unidades configuradas").small());
+            }
+            for m in unidades {
+                let estado = if m.mounted { "montada" } else { "sin montar: ábrela en IureDav" };
+                ui.label(RichText::new(format!("Unidad «{}» en {} · {estado}", m.name, m.mount_point)).small());
+            }
+            ui.add_space(4.0);
+            match account::active() {
+                Some(c) => {
+                    ui.label(RichText::new(format!("Cuenta de la suite: {} en {} (guardada por {})", c.email, c.domain, c.app)).small());
+                    ui.label(
+                        RichText::new("Consultar proyectos, tareas y agenda de la instancia aún no está disponible (fases F0–F1 del plan).")
+                            .small()
+                            .weak(),
+                    );
+                }
+                None => drop(ui.label(RichText::new("Sin cuenta de Iurefficient en este equipo: entra desde IureTranscribe o IureDav.").small())),
+            }
+        });
+    }
+
     /// Tareas de Claude corriendo en segundo plano.
     fn tareas_claude(&mut self, ui: &mut egui::Ui) {
         let tareas = crate::claude::tareas();
