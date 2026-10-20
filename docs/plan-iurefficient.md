@@ -17,6 +17,24 @@ Objetivo: preguntarle por voz a Iurefficient («¿qué tengo hoy?», «¿cómo v
 
 Huecos: el MCP no tiene «mis tareas», «agenda de hoy», «notificaciones» ni «horas»; no hay CalDAV en la suite (solo exportar ICS); el MCP no escribe.
 
+## Apps de escritorio de la suite (instaladas aquí: IureTranscribe 0.8.0, IureOCR 0.5.1, IureEditor 1.11.2, IureDav 0.8.1)
+
+Hay dos formas de hablarles, y cada una sirve para algo distinto:
+
+- **MCP stdio (`<app> --mcp`)**: arranca un proceso nuevo y trabaja en segundo plano (sin ventana). Sirve para OCR, extraer texto o transcribir un archivo. **No controla la ventana abierta.**
+- **Ventana abierta**: las cuatro usan instancia única con enlaces propios (`iuretranscribe://`, `iureditor://`, `iureocr://`, `iuredav://`): relanzar el binario con una ruta o un enlace le llega a la ventana que ya está abierta. Además IureVoz puede teclear en la ventana enfocada (ya funciona).
+
+`iurefficient-connect` ya trae `apps::locate` (encuentra los binarios), `apps::launch` / `apps::open_with` (abrir con ruta o enlace) y `apps::iuredav_mounts()` (puntos de montaje de IureDav): no hay que reinventarlo.
+
+| App | Qué se podrá pedir por voz | Cómo | ¿Cambios en la app? |
+|---|---|---|---|
+| **IureEditor** (Tiptap) | Dictar dentro del documento; «abre en el editor el escrito de Juárez»; «documento nuevo»; formato con atajos («negritas», «título») | Dictado: ya funciona hoy (se teclea donde está el cursor). Abrir: `iureditor://open?path=…` o `iureditor://iurefficient/doc?case=&doc=`. Formato: herramienta `teclas` (Ctrl+B…) o un **modo dictado Markdown** en IureVoz («título uno» → `# `, «viñeta» → `- `) cuando la ventana activa es IureEditor | No; opcional `iureditor://new` |
+| **IureDav** | «¿Qué archivos hay en el expediente Juárez?», «busca el contrato de arrendamiento», «ábrelo», «léemelo» | `apps::iuredav_mounts()` → montaje (aquí `~/Iurefficient-syncrum`); herramientas de IureVoz para listar/buscar en esa carpeta y abrir (`gio open` o en IureEditor); leer: texto directo, PDF vía IureOCR `extract_text`. Si no está montado, se avisa o se abre IureDav | No |
+| **IureTranscribe** | «Graba la junta» / «detén la grabación» (con hablantes), «transcribe la última grabación», «¿qué se acordó?» | Grabar en la ventana: hoy `iuretranscribe://record` solo cambia de vista → **agregar acciones** `iuretranscribe://record/start?speakers=…` y `/stop` que llamen a `start_recording`/`stop_recording`. Transcribir y leer: MCP (`transcribe_file`, `transcription_status`, `list_recordings`, `read_transcript`), con progreso en la tarjeta de tareas como Claude | **Sí, pequeño**: dos acciones de enlace en `state.svelte.ts` (+ quizá `recording_status` por MCP) |
+| **IureOCR** | «Pásale OCR a este PDF», «léeme la página 3», «gira la página 2», «quita las páginas 5 a 7», «¿cuántas páginas tiene?» | MCP directo: `ocr_file` (con progreso y cancelación), `extract_text`, `pdf_info`, `edit_pdf_pages` (con confirmación: crea un PDF nuevo junto al original). «Este PDF» = el seleccionado en Archivos o el último mencionado | No |
+
+Detalle: mientras IureTranscribe graba, IureVoz sigue pudiendo usar el micrófono (PipeWire permite varias capturas), pero conviene pausar «siempre escuchando» para no transcribir la junta como instrucciones.
+
 ## Arquitectura propuesta
 
 ```
@@ -24,6 +42,7 @@ voz ─▶ agente IureVoz ─┬─ herramientas de escritorio (hoy)
                        ├─ «iurefficient»: sub-agente ─┬─ MCP remoto /api/mcp (lectura, descubierto dinámicamente)
                        │                              └─ REST vía connect (escrituras, siempre con confirmación)
                        ├─ MCP stdio de la suite: IureTranscribe, IureOCR (descubierto dinámicamente)
+                       ├─ enlaces a ventanas abiertas: iureditor://, iuretranscribe://record/start, IureDav (montaje)
                        └─ Claude Code (etapa 2, ya existe)
 IureVoz --mcp ◀─ Claude Desktop / Claude Code (decir en voz alta, pedir confirmación, dictar)
 ```
@@ -46,10 +65,11 @@ Decisiones de diseño:
 | **F3 · Ábrelo** | `abrir_en_iurefficient(tipo, id/nombre)`: resuelve el id con MCP y abre `/dashboard/cases/<id>`, `/tasks/<id>`, `/calendar`, `/timesheet`… en el navegador. | iurevoz | S |
 | **F4 · Escribir** | Con confirmación: registrar horas (ya en `api.rs`), crear tarea, crear evento de agenda, marcar notificaciones leídas, dictar una nota o comentario a una tarea. Wrappers nuevos en connect (`tasks`, `calendar_events`, `notifications`). | connect + iurevoz | M |
 | **F5 · Resumen y avisos** | «¿Qué tengo hoy?» como comando rápido; resumen hablado opcional al iniciar sesión; aviso por voz/notificación de vencimientos y menciones (sondeo local cada 15 min, sin servidor nuevo). | iurevoz | S |
-| **F6 · Suite de escritorio** | Cliente MCP stdio para IureTranscribe e IureOCR («transcribe la grabación de la junta», «pásale OCR a este PDF y súbelo al expediente»). Y `iurevoz --mcp` con el `Handler` de connect: `decir`, `preguntar_por_voz` (confirmación hablada), `dictar` — Claude Desktop/Code podrían hablar y escuchar a través de IureVoz. Registro en Claude Desktop con `agents.rs`. | iurevoz | M |
+| **F6a · Apps de escritorio** | Cliente MCP stdio (IureOCR, IureTranscribe) con progreso; IureDav (montaje, listar/buscar/abrir/leer); IureEditor (abrir por enlace, modo dictado Markdown al detectar su ventana); IureTranscribe grabar/detener por enlace | iurevoz + acciones `record/start|stop` en iuretranscribe | M |
+| **F6b · IureVoz como MCP** | `iurevoz --mcp` con el `Handler` de connect: `decir`, `preguntar_por_voz` (confirmación hablada), `dictar` — Claude Desktop/Code podrían hablar y escuchar a través de IureVoz. Registro en Claude Desktop con `agents.rs`. | iurevoz | S |
 | **F7 · Agenda local (opcional)** | Leer/crear eventos del calendario de GNOME (Evolution Data Server por D-Bus) o suscribir el ICS de Iurefficient en GNOME Calendar. Solo si el usuario usa esa agenda. | iurevoz | S |
 
-Orden sugerido: F0 → F1 → F3 → F2 → F5 → F4 → F6 → F7. F1+F3 ya dan valor con lo que el servidor ofrece hoy; F2 vuelve útil «mi día»; las escrituras van después, cuando la lectura sea confiable.
+Orden sugerido: F0 → F1 → F3 → F6a → F2 → F5 → F4 → F6b → F7. F1+F3 ya dan valor con lo que el servidor ofrece hoy; F6a casi no necesita la instancia (IureOCR, IureDav e IureEditor funcionan con archivos locales) y puede ir incluso antes de F0; F2 vuelve útil «mi día»; las escrituras van después, cuando la lectura sea confiable.
 
 ## Ejemplos de uso al terminar F1–F5
 
@@ -59,6 +79,10 @@ Orden sugerido: F0 → F1 → F3 → F2 → F5 → F4 → F6 → F7. F1+F3 ya da
 - «Busca en los expedientes dónde se habló de la suspensión provisional» → resultados leídos en resumen.
 - «Registra hora y media en Juárez por revisión de pruebas» → confirmación hablada → `time_entry`.
 - «Crea una tarea para mañana: llamar al cliente Pérez» → confirmación → tarea.
+- «Abre en el editor el escrito de contestación» → IureEditor se abre ahí; luego dictas con «título uno», «viñeta», «punto y aparte».
+- «¿Qué hay en la carpeta de Juárez?» → lista hablada de la unidad de IureDav; «léeme el contrato» → texto vía IureOCR.
+- «Graba la junta con Pérez y García» → IureTranscribe empieza a grabar; «detén la grabación… ¿qué se acordó?» → transcripción y resumen.
+- «Pásale OCR al PDF que acabo de escanear y gira la página 2» → IureOCR en segundo plano, con progreso y confirmación para editar.
 
 ## Riesgos y preguntas abiertas
 
