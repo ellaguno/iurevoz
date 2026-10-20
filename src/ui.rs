@@ -59,7 +59,8 @@ pub struct App {
     esperando_comando: bool,
     /// Los atajos personalizados de GNOME ya existen.
     atajos_gnome: bool,
-    estado_iure: Option<(std::time::Instant, crate::iure::Estado)>,
+    /// Pedir que se recalcule el panorama de Iurefficient (tras conectar).
+    renovar_iure: bool,
     /// Formulario para entrar a Iurefficient: (contraseña, código, pide código, visible).
     entrada_iure: (String, String, bool, bool),
     /// Mensajes del entrenamiento del detector en curso.
@@ -90,7 +91,7 @@ impl App {
             voz,
             esperando_comando: false,
             atajos_gnome: crate::atajos_gnome::instalados(),
-            estado_iure: None,
+            renovar_iure: false,
             entrada_iure: Default::default(),
             entrenando: None,
             progreso_entrenamiento: String::new(),
@@ -600,16 +601,25 @@ fn ajustes_llm(ui: &mut egui::Ui, id: &str, c: &mut Correccion) -> bool {
 
 impl App {
     /// Qué ve IureVoz de la suite Iurefficient: apps instaladas, unidades de IureDav y cuenta.
+    /// Los datos se calculan en otro hilo (`iure::panorama`): aquí solo se dibujan.
     fn panel_suite(&mut self, ui: &mut egui::Ui) {
-        use iurefficient_connect::{account, apps};
         let verde = Color32::from_rgb(60, 160, 60);
         egui::CollapsingHeader::new(RichText::new("Iurefficient").strong()).default_open(false).show(ui, |ui| {
+            let ctx = ui.ctx().clone();
+            let renovar = std::mem::take(&mut self.renovar_iure);
+            let Some(p) = crate::iure::panorama(renovar, move || ctx.request_repaint()) else {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    ui.label(RichText::new("consultando apps, unidades y cuenta…").small());
+                });
+                return;
+            };
             ui.label(RichText::new("Apps de escritorio (se detectan solas, sin configurar)").small().weak());
-            for a in apps::installed() {
+            for a in &p.apps {
                 ui.horizontal(|ui| {
                     if a.installed {
                         ui.label(RichText::new(format!("✔ {}", a.name)).color(verde));
-                        ui.label(RichText::new(a.path.unwrap_or_default()).small().weak());
+                        ui.label(RichText::new(a.path.clone().unwrap_or_default()).small().weak());
                     } else {
                         ui.label(format!("✖ {} no instalada", a.name));
                         if ui.small_button("Descargar").clicked() {
@@ -619,26 +629,21 @@ impl App {
                 });
             }
             ui.add_space(4.0);
-            let unidades = apps::iuredav_mounts();
-            if unidades.is_empty() {
+            if p.unidades.is_empty() {
                 ui.label(RichText::new("IureDav: sin unidades configuradas").small());
             }
-            for m in unidades {
+            for m in &p.unidades {
                 let estado = if m.mounted { "montada" } else { "sin montar: ábrela en IureDav" };
                 ui.label(RichText::new(format!("Unidad «{}» en {} · {estado}", m.name, m.mount_point)).small());
             }
             ui.add_space(4.0);
-            if let Some(c) = account::active() {
+            if let Some(c) = &p.cuenta {
                 ui.label(RichText::new(format!("Cuenta de la suite: {} en {} (guardada por {})", c.email, c.domain, c.app)).small());
             }
-            // el estado se consulta al llavero: se guarda un rato para no hacerlo en cada cuadro
-            if self.estado_iure.as_ref().is_none_or(|(t, _)| t.elapsed() > std::time::Duration::from_secs(10)) {
-                self.estado_iure = Some((std::time::Instant::now(), crate::iure::estado()));
-            }
             use crate::iure::Estado;
-            match self.estado_iure.as_ref().map(|(_, e)| e.clone()) {
-                Some(Estado::Conectado(q)) => drop(ui.label(RichText::new(format!("✔ IureVoz conectado a la instancia ({q})")).color(verde))),
-                Some(Estado::PorConectar(q)) if !self.entrada_iure.3 => {
+            match p.estado.clone() {
+                Estado::Conectado(q) => drop(ui.label(RichText::new(format!("✔ IureVoz conectado a la instancia ({q})")).color(verde))),
+                Estado::PorConectar(q) if !self.entrada_iure.3 => {
                     ui.horizontal(|ui| {
                         if ui.button("Conectar IureVoz").on_hover_text("Crea un token de solo lectura «IureVoz» (un año, revocable en Iurefficient)").clicked() {
                             match crate::iure::conectar() {
@@ -649,12 +654,12 @@ impl App {
                                     self.entrada_iure.3 = true;
                                 }
                             }
-                            self.estado_iure = None;
+                            self.renovar_iure = true;
                         }
                         ui.label(RichText::new(format!("con la sesión de la suite ({q})")).small());
                     });
                 }
-                Some(Estado::PorConectar(q) | Estado::SinCredenciales(q)) => {
+                Estado::PorConectar(q) | Estado::SinCredenciales(q) => {
                     ui.label(RichText::new(format!("Entra a Iurefficient ({q}). La contraseña no se guarda; IureVoz crea un token de solo lectura.")).small());
                     let (clave, codigo, pide_codigo, _) = &mut self.entrada_iure;
                     let mut resultado = None;
@@ -682,7 +687,7 @@ impl App {
                         Some(Ok(Some(m))) => {
                             self.estado = m;
                             self.entrada_iure = Default::default();
-                            self.estado_iure = None;
+                            self.renovar_iure = true;
                             self.error = None;
                         }
                         Some(Ok(None)) => self.entrada_iure.2 = true,
@@ -693,7 +698,7 @@ impl App {
                         None => {}
                     }
                 }
-                _ => drop(ui.label(RichText::new("Sin cuenta de Iurefficient en este equipo: entra desde IureTranscribe o IureDav.").small())),
+                Estado::SinCuenta => drop(ui.label(RichText::new("Sin cuenta de Iurefficient en este equipo: entra desde IureTranscribe o IureDav.").small())),
             }
         });
     }

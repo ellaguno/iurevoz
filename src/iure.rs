@@ -211,3 +211,40 @@ pub fn llamar(nombre: &str, args: Value) -> Result<String> {
     };
     Ok(texto.chars().take(6000).collect())
 }
+
+// ── estado para la ventana ───────────────────────────────────────────────────
+
+/// Lo que la sección «Iurefficient» de Ajustes muestra. Se calcula en un hilo aparte:
+/// leer una unidad de red o el llavero puede tardar segundos y congelaría la ventana.
+#[derive(Clone)]
+pub struct Panorama {
+    pub apps: Vec<iurefficient_connect::apps::AppStatus>,
+    pub unidades: Vec<iurefficient_connect::apps::DavMount>,
+    pub cuenta: Option<iurefficient_connect::account::ActiveAccount>,
+    pub estado: Estado,
+    pub cuando: Instant,
+}
+
+static PANORAMA: Mutex<Option<Panorama>> = Mutex::new(None);
+static CALCULANDO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Último panorama calculado (si hay). Si es viejo o se pide `renovar`, se recalcula aparte.
+pub fn panorama(renovar: bool, avisar: impl Fn() + Send + 'static) -> Option<Panorama> {
+    let actual = PANORAMA.lock().unwrap().clone();
+    let viejo = actual.as_ref().is_none_or(|p| p.cuando.elapsed() > Duration::from_secs(30));
+    if (renovar || viejo) && !CALCULANDO.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        std::thread::spawn(move || {
+            let p = Panorama {
+                apps: iurefficient_connect::apps::installed(),
+                unidades: iurefficient_connect::apps::iuredav_mounts(),
+                cuenta: account::active(),
+                estado: estado(),
+                cuando: Instant::now(),
+            };
+            *PANORAMA.lock().unwrap() = Some(p);
+            CALCULANDO.store(false, std::sync::atomic::Ordering::Relaxed);
+            avisar();
+        });
+    }
+    actual
+}
