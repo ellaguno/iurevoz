@@ -182,6 +182,9 @@ impl Controlador {
 
     /// Atiende los avisos del portal: los atajos controlan el dictado; el resto va a la interfaz.
     pub fn aviso_portal(&self, a: Aviso, ui: &Sender<ParaUi>) {
+        if !matches!(a, Aviso::TokenTeclado(_)) {
+            log(&format!("portal: {a:?}"));
+        }
         match a {
             Aviso::Atajo { id, pulsado } => self.enviar(Control::Atajo(id, pulsado)),
             Aviso::AtajoAsignado(id, s) => drop(ui.send(ParaUi::AtajoAsignado(id, s))),

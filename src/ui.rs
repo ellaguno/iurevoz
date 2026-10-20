@@ -57,6 +57,8 @@ pub struct App {
     portal: Option<Portal>,
     voz: Option<Voz>,
     esperando_comando: bool,
+    /// Los atajos personalizados de GNOME ya existen.
+    atajos_gnome: bool,
     prueba: PruebaTeclado,
 }
 
@@ -81,6 +83,7 @@ impl App {
             portal,
             voz,
             esperando_comando: false,
+            atajos_gnome: crate::atajos_gnome::instalados(),
             prueba: PruebaTeclado::default(),
         }
     }
@@ -198,7 +201,7 @@ impl App {
                 self.alternar();
             }
             let escuchando = self.ctl.estado.modo_comando.load(Ordering::Relaxed);
-            let b = egui::Button::new(RichText::new(if escuchando { "… te escucho" } else { "⌘ Comando" }).size(15.0))
+            let b = egui::Button::new(RichText::new(if escuchando { "… te escucho" } else { "💬 Comando" }).size(15.0))
                 .min_size(egui::vec2(110.0, 40.0));
             if ui.add_enabled(self.listo && self.cfg.comandos.activos, b).clicked() {
                 self.ctl.enviar(Control::Comando);
@@ -213,8 +216,15 @@ impl App {
                 let nivel = f32::from_bits(self.ctl.estado.nivel.load(Ordering::Relaxed));
                 let barra = egui::ProgressBar::new((nivel * 8.0).sqrt().min(1.0)).desired_width(160.0).desired_height(6.0);
                 ui.add(barra);
-                let a = |id: &str, def: &str| self.atajos.get(id).cloned().unwrap_or_else(|| def.to_string());
-                ui.label(RichText::new(format!("Dictar {} · Comando {} · Leer {}", a("dictar", "F9"), a("comando", "—"), a("leer", "—"))).small().weak());
+                let texto = if !self.atajos.is_empty() {
+                    let a = |id: &str| self.atajos.get(id).cloned().unwrap_or_else(|| "—".into());
+                    format!("Dictar {} · Comando {} · Leer {}", a("dictar"), a("comando"), a("leer"))
+                } else if self.atajos_gnome {
+                    "Dictar Ctrl+Alt+Espacio · Comando Ctrl+Alt+C · Leer Ctrl+Alt+L".into()
+                } else {
+                    "Atajos: F9 en esta ventana (instálalos en Ajustes)".into()
+                };
+                ui.label(RichText::new(texto).small().weak());
             });
         });
     }
@@ -369,6 +379,22 @@ impl App {
                 }
             });
             ui.end_row();
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            let t = if self.atajos_gnome { "Reinstalar atajos de GNOME" } else { "Instalar atajos de GNOME" };
+            if ui.button(t).on_hover_text("Crea en Configuración → Teclado los atajos Ctrl+Alt+Espacio (dictar), Ctrl+Alt+C (instrucción) y Ctrl+Alt+L (leer)").clicked() {
+                match crate::atajos_gnome::instalar() {
+                    Ok(m) => {
+                        self.atajos_gnome = true;
+                        self.estado = m;
+                    }
+                    Err(e) => self.error = Some(format!("{e:#}")),
+                }
+            }
+            if self.atajos_gnome {
+                ui.label(RichText::new("instalados").small().color(Color32::from_rgb(60, 160, 60)));
+            }
         });
         self.panel_prueba(ui);
         if self.cfg.correccion.activa && self.cfg.correccion.servicio == Servicio::OpenRouter {

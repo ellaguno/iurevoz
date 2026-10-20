@@ -2,6 +2,7 @@
 
 mod agente;
 mod asr;
+mod atajos_gnome;
 mod audio;
 mod config;
 mod control;
@@ -30,6 +31,7 @@ Uso:
   iurevoz transcribir A.wav [--corregir]
                                 prueba sin interfaz: ASR + puntuación (+ corrección)
   iurevoz comando \"instrucción\"   ejecuta una instrucción sin interfaz (prueba del modo comando)
+  iurevoz instalar-atajos       crea atajos de GNOME (Ctrl+Alt+Espacio, Ctrl+Alt+C, Ctrl+Alt+L)
   iurevoz leer | callar         lee la selección en voz alta en la instancia abierta
   iurevoz decir \"texto\" [--voz CLAVE] [--guardar A.wav]
                                 habla con la voz local (claves: piper-ald, piper-claude,
@@ -46,6 +48,7 @@ fn main() -> Result<()> {
                 bail!("iurevoz no está abierto");
             }
         }
+        Some("instalar-atajos") => println!("{}", atajos_gnome::instalar()?),
         Some("comando") if args.len() == 1 => {
             if !control::enviar_a_instancia("comando") {
                 bail!("iurevoz no está abierto");

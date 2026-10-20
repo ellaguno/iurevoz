@@ -90,8 +90,16 @@ impl Portal {
 async fn atajo_global(avisar: &(dyn Fn(Aviso) + Send + Sync)) -> Result<()> {
     let gs = GlobalShortcuts::new().await?;
     let sesion = gs.create_session(Default::default()).await?;
+    if std::env::var_os("IUREVOZ_LOG").is_some() {
+        eprintln!("[iurevoz] portal: sesión de atajos creada (versión {})", gs.version());
+    }
     let atajos: Vec<NewShortcut> = ATAJOS.iter().map(|(id, d, t)| NewShortcut::new(*id, *d).preferred_trigger(*t)).collect();
-    let r = gs.bind_shortcuts(&sesion, &atajos, None, Default::default()).await?.response()?;
+    // En GNOME 50 de Ubuntu el portal a veces nunca responde: se avisa en vez de esperar para siempre.
+    let pedido = gs.bind_shortcuts(&sesion, &atajos, None, Default::default());
+    let r = match tokio::time::timeout(Duration::from_secs(60), pedido).await {
+        Ok(r) => r?.response()?,
+        Err(_) => anyhow::bail!("el portal de GNOME no respondió; usa «Instalar atajos de GNOME» en Ajustes"),
+    };
     for s in r.shortcuts() {
         avisar(Aviso::AtajoAsignado(s.id().to_string(), s.trigger_description().to_string()));
     }

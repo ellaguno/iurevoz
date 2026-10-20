@@ -116,17 +116,25 @@ struct Rutas {
     control: Sender<Control>,
 }
 
-/// Si la frase empieza con el prefijo («computadora, abre…»), devuelve el resto.
-fn quitar_prefijo(frase: &str, prefijo: &str) -> Option<String> {
+/// Si la frase empieza con el prefijo («computadora, abre…»), devuelve el resto. Tolera
+/// un artículo o «oye» delante y variantes que comparten raíz («el computador», «computadoras»).
+/// `tolerante` solo en modo comando: al dictar, «la computadora está lenta» es texto.
+fn quitar_prefijo(frase: &str, prefijo: &str, tolerante: bool) -> Option<String> {
     let norm = |s: &str| crate::correccion::palabras(s);
     let p = norm(prefijo);
-    let f = norm(frase);
-    if p.is_empty() || f.len() < p.len() || f[..p.len()] != p[..] {
+    let mut f = norm(frase);
+    let mut saltadas = 0;
+    while tolerante && f.len() > p.len() && matches!(f[0].as_str(), "el" | "la" | "oye" | "hey" | "ok") && p.first().is_some_and(|x| *x != f[0]) {
+        f.remove(0);
+        saltadas += 1;
+    }
+    let parecida = |a: &str, b: &str| a == b || (tolerante && b.chars().count() >= 8 && a.chars().take(8).eq(b.chars().take(8)));
+    if p.is_empty() || f.len() < p.len() || !f.iter().zip(&p).all(|(a, b)| parecida(a, b)) {
         return None;
     }
     // se corta en el texto original tras tantas palabras como tenga el prefijo
     let mut resto = frase;
-    for _ in 0..p.len() {
+    for _ in 0..p.len() + saltadas {
         resto = resto.trim_start_matches(|c: char| !c.is_alphanumeric());
         resto = resto.trim_start_matches(char::is_alphanumeric);
     }
@@ -153,9 +161,10 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                     // ¿instrucción en vez de dictado?
                     let instruccion = if rutas.estado.modo_comando.swap(false, std::sync::atomic::Ordering::Relaxed) {
                         let _ = rutas.control.send(Control::FinComando);
-                        Some(t.clone())
+                        // también se quita el prefijo si se dijo por costumbre
+                        Some(quitar_prefijo(&t, &cfg.comandos.prefijo, true).filter(|r| !r.is_empty()).unwrap_or_else(|| t.clone()))
                     } else if cfg.comandos.activos {
-                        quitar_prefijo(&t, &cfg.comandos.prefijo)
+                        quitar_prefijo(&t, &cfg.comandos.prefijo, false)
                     } else {
                         None
                     };
@@ -343,9 +352,14 @@ mod pruebas {
 
     #[test]
     fn prefijo() {
-        assert_eq!(quitar_prefijo("Computadora, abre la calculadora", "computadora").as_deref(), Some("abre la calculadora"));
-        assert_eq!(quitar_prefijo("computadora", "computadora").as_deref(), Some(""));
-        assert_eq!(quitar_prefijo("La computadora está lenta", "computadora"), None);
-        assert_eq!(quitar_prefijo("Oye Iure, ¿qué hora es?", "oye iure").as_deref(), Some("qué hora es?"));
+        // al dictar: estricto
+        assert_eq!(quitar_prefijo("Computadora, abre la calculadora", "computadora", false).as_deref(), Some("abre la calculadora"));
+        assert_eq!(quitar_prefijo("computadora", "computadora", false).as_deref(), Some(""));
+        assert_eq!(quitar_prefijo("La computadora está lenta", "computadora", false), None);
+        assert_eq!(quitar_prefijo("Oye Iure, ¿qué hora es?", "oye iure", false).as_deref(), Some("qué hora es?"));
+        // en modo comando: tolera artículo y variantes
+        assert_eq!(quitar_prefijo("El computador sube el volumen", "computadora", true).as_deref(), Some("sube el volumen"));
+        assert_eq!(quitar_prefijo("Mi computadora está lenta", "computadora", true), None);
+        assert_eq!(quitar_prefijo("Computación es una carrera", "computadora", true), None);
     }
 }
