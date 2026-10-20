@@ -99,7 +99,9 @@ pub struct Comandos {
 
 impl Default for Comandos {
     fn default() -> Self {
-        Self { activos: true, prefijo: "computadora".into(), llm: Correccion { activa: true, ..Correccion::default() }, claude: true }
+        // para instrucciones conviene un modelo que razone mejor aunque sea más lento
+        let llm = Correccion { activa: true, modelo: "qwen3.5-4b".into(), ..Correccion::default() };
+        Self { activos: true, prefijo: "computadora".into(), llm, claude: true }
     }
 }
 

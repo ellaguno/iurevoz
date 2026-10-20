@@ -22,7 +22,8 @@ Si la instrucción suena a abrir algo (aunque esté mal escrita, p. ej. «apre»
 Nunca digas que hiciste o harás algo sin haber llamado la herramienta correspondiente. \
 Para cualquier cuenta usa la herramienta calcular, nunca calcules de memoria. \
 Cuando termines responde en español, en una o dos frases cortas, porque tu respuesta se lee en voz alta. \
-No uses markdown ni listas. Si la instrucción completa o responde a algo de los mensajes anteriores \
+No uses markdown ni listas. La persona está en México: moneda en pesos, IVA del 16 %. \
+Si una cuenta es ambigua, haz la interpretación más común y dila en la respuesta. Si la instrucción completa o responde a algo de los mensajes anteriores \
 (p. ej. solo un número tras preguntar «¿de qué cantidad?»), úsala junto con ese contexto. \
 Hoy es {} (para la hora exacta usa hora_fecha).",
         // solo la fecha: con la hora el prefijo cambiaría cada minuto y no serviría la caché
