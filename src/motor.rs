@@ -20,10 +20,14 @@ use crate::voz::Voz;
 
 pub enum Orden {
     Audio { muestras: Vec<f32>, tasa: u32 },
+    /// Audio en modo «siempre escuchando»: solo se busca la palabra clave.
+    Vigilia { muestras: Vec<f32>, tasa: u32 },
     /// Fin del dictado: sale la última frase y se reinicia la puntuación.
     Fin,
     /// Nueva configuración (recarga el modelo si cambió).
     Config(Config),
+    /// Se entrenó un detector nuevo: volver a cargarlo.
+    RecargarDetector,
     Descargar,
 }
 
@@ -41,6 +45,8 @@ pub enum Evento {
     Comando { id: usize, instruccion: String },
     /// El modo comando espera la instrucción (se dijo solo el prefijo).
     EsperandoComando,
+    /// Se oyó la palabra clave.
+    Despierto,
     Accion { id: usize, texto: String },
     Respuesta { id: usize, texto: String },
     ErrorComando { id: usize, msg: String },
@@ -134,6 +140,9 @@ fn para_claude(instruccion: &str) -> Option<String> {
     (!resto.is_empty()).then(|| resto.to_string())
 }
 
+/// Tiempo máximo esperando una instrucción que no empieza.
+const ESPERA_INSTRUCCION: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// Silencio tras la última frase que da por terminada una instrucción.
 const FIN_INSTRUCCION: std::time::Duration = std::time::Duration::from_millis(1000);
 
@@ -201,6 +210,10 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
 
     // instrucción que se va armando con varias frases (el usuario puede pausar para pensar)
     let mut instr: Option<EnCurso> = None;
+    // detector de palabra clave; se crea al primer audio de vigilia
+    let mut vigilia: Option<crate::vigilia::Vigilia> = None;
+    // desde cuándo se espera una instrucción que no llega
+    let mut esperando_desde: Option<std::time::Instant> = None;
     let mut ultimo_envio: Option<std::time::Instant> = None;
     let modo = |r: &Rutas| r.estado.modo_comando.load(std::sync::atomic::Ordering::Relaxed);
 
@@ -234,8 +247,13 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                     }
                     // ¿empieza una instrucción?
                     let inicio = if modo(&rutas) {
-                        // también se quita el prefijo si se dijo por costumbre
-                        Some(quitar_prefijo(&t, &cfg.comandos.prefijo, true).filter(|r| !r.is_empty()).unwrap_or_else(|| t.clone()))
+                        // se quitan la palabra clave y el prefijo si vienen al inicio
+                        let sin_clave = crate::vigilia::quitar(&t, &cfg.escucha.palabra, cfg.escucha.tolerancia).unwrap_or_else(|| t.clone());
+                        if sin_clave.trim().is_empty() {
+                            Some(String::new())
+                        } else {
+                            Some(quitar_prefijo(&sin_clave, &cfg.comandos.prefijo, true).filter(|r| !r.is_empty()).unwrap_or(sin_clave))
+                        }
                     } else if cfg.comandos.activos {
                         quitar_prefijo(&t, &cfg.comandos.prefijo, false)
                     } else {
@@ -278,21 +296,65 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
         let _ = rutas.agente.send((*id, i, cfg.clone()));
     };
 
+    fn a_16k(remuestreo: &mut Option<(u32, LinearResampler)>, muestras: Vec<f32>, tasa: u32) -> Option<Vec<f32>> {
+        if tasa as i32 == SR {
+            return Some(muestras);
+        }
+        if remuestreo.as_ref().is_none_or(|(t, _)| *t != tasa) {
+            *remuestreo = LinearResampler::create(tasa as i32, SR).map(|r| (tasa, r));
+        }
+        remuestreo.as_ref().map(|(_, rs)| rs.resample(&muestras, false))
+    }
+
     for orden in rx {
         match orden {
+            Orden::Vigilia { muestras, tasa } => {
+                let Some(r) = rec.as_mut() else { continue };
+                let Some(m16) = a_16k(&mut remuestreo, muestras, tasa) else { continue };
+                if vigilia.is_none() {
+                    match modelos::rutas_moonshine().and_then(|m| crate::vigilia::Vigilia::new(&m.vad)) {
+                        Ok(mut v) => {
+                            let dedicado = v.cargar_detector(&cfg.escucha.palabra);
+                            ev.enviar(Evento::Estado(format!(
+                                "Esperando «{}» ({})",
+                                cfg.escucha.palabra,
+                                if dedicado { "detector dedicado" } else { "verificación con Moonshine" }
+                            )));
+                            vigilia = Some(v)
+                        }
+                        Err(e) => {
+                            ev.enviar(Evento::Error(format!("siempre escuchando: {e:#}")));
+                            continue;
+                        }
+                    }
+                }
+                let v = vigilia.as_mut().unwrap();
+                let (palabra, tol) = (cfg.escucha.palabra.clone(), cfg.escucha.tolerancia);
+                let despierta = v.alimentar(&m16, |tramo| {
+                    let t = r.transcribir_corto(tramo);
+                    let si = crate::vigilia::coincide(&t, &palabra, tol).is_some();
+                    if std::env::var_os("IUREVOZ_LOG").is_some() {
+                        eprintln!("[iurevoz] vigilia: {t:?}{}", if si { " → despierta" } else { "" });
+                    }
+                    si
+                });
+                if let Some(audio) = despierta {
+                    // desde ya el audio va al reconocedor principal, en modo comando
+                    rutas.estado.atento.store(true, std::sync::atomic::Ordering::Relaxed);
+                    rutas.estado.modo_comando.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let _ = rutas.control.send(Control::Despertar);
+                    ev.enviar(Evento::Despierto);
+                    esperando_desde = Some(std::time::Instant::now());
+                    let s = r.alimentar(&audio);
+                    emitir(s, &cfg, &mut punt, &mut instr, &mut id);
+                }
+            }
             Orden::Audio { muestras, tasa } => {
                 let Some(r) = rec.as_mut() else { continue };
-                let m16 = if tasa as i32 == SR {
-                    muestras
-                } else {
-                    if remuestreo.as_ref().is_none_or(|(t, _)| *t != tasa) {
-                        remuestreo = LinearResampler::create(tasa as i32, SR).map(|r| (tasa, r));
-                    }
-                    match &remuestreo {
-                        Some((_, rs)) => rs.resample(&muestras, false),
-                        None => continue,
-                    }
-                };
+                let Some(m16) = a_16k(&mut remuestreo, muestras, tasa) else { continue };
+                if let Some(v) = vigilia.as_mut() {
+                    v.reiniciar(); // al volver a vigilar se empieza limpio
+                }
                 if grabar {
                     grabacion.extend_from_slice(&m16);
                 }
@@ -302,6 +364,19 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                 if instr.as_ref().is_some_and(|e| !e.hablando && e.ultimo.elapsed() >= FIN_INSTRUCCION) {
                     despachar(&mut instr, &cfg, &mut id);
                     ultimo_envio = Some(std::time::Instant::now());
+                    esperando_desde = None;
+                }
+                // modo comando sin instrucción: se cancela a los 8 s para no dejar el reconocedor andando
+                if instr.is_none() && modo(&rutas) {
+                    let desde = *esperando_desde.get_or_insert_with(std::time::Instant::now);
+                    if desde.elapsed() >= ESPERA_INSTRUCCION && rutas.estado.pendiente.lock().unwrap().is_none() {
+                        rutas.estado.modo_comando.store(false, std::sync::atomic::Ordering::Relaxed);
+                        let _ = rutas.control.send(Control::FinComando);
+                        esperando_desde = None;
+                        ev.enviar(Evento::Estado("No oí ninguna instrucción.".into()));
+                    }
+                } else if instr.is_some() {
+                    esperando_desde = None;
                 }
             }
             Orden::Fin => {
@@ -329,7 +404,19 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                     rs.reset();
                 }
             }
+            Orden::RecargarDetector => {
+                if let Some(v) = vigilia.as_mut() {
+                    let dedicado = v.cargar_detector(&cfg.escucha.palabra);
+                    ev.enviar(Evento::Estado(format!("Detector de «{}»: {}", cfg.escucha.palabra, if dedicado { "cargado" } else { "no entrenado" })));
+                }
+            }
             Orden::Config(nueva) => {
+                // otra palabra clave: otro detector
+                if nueva.escucha.palabra != cfg.escucha.palabra {
+                    if let Some(v) = vigilia.as_mut() {
+                        v.cargar_detector(&nueva.escucha.palabra);
+                    }
+                }
                 let recargar = nueva.modelo_asr != cfg.modelo_asr || nueva.hilos != cfg.hilos || nueva.silencio != cfg.silencio;
                 cfg = nueva;
                 if recargar || rec.is_none() {

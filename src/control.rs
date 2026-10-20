@@ -36,6 +36,10 @@ pub enum Control {
     Responder(bool),
     /// El permiso con este número venció sin respuesta.
     Caducar(u64),
+    /// Se oyó la palabra clave (lo manda el motor).
+    Despertar,
+    /// Activa o desactiva el modo «siempre escuchando».
+    Vigilia(bool),
 }
 
 /// Avisos para la interfaz que no son del motor.
@@ -53,6 +57,10 @@ pub struct Estado {
     pub modo_comando: Arc<AtomicBool>,
     /// Permiso que espera respuesta: (número, descripción, a quién avisar).
     pub pendiente: Arc<std::sync::Mutex<Option<(u64, String, Sender<bool>)>>>,
+    /// El audio va al reconocedor principal; si no, a la vigilia (palabra clave).
+    pub atento: Arc<AtomicBool>,
+    /// Modo «siempre escuchando» activo.
+    pub vigilia: Arc<AtomicBool>,
 }
 
 impl Estado {
@@ -62,6 +70,8 @@ impl Estado {
             nivel: Arc::new(AtomicU32::new(0)),
             modo_comando: Arc::new(AtomicBool::new(false)),
             pendiente: Default::default(),
+            atento: Arc::new(AtomicBool::new(false)),
+            vigilia: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -95,23 +105,39 @@ impl Controlador {
             .name("control".into())
             .spawn(move || {
                 // cpal::Stream no es Send: se crea y se suelta siempre en este hilo
-                let mut captura = None;
-                // el micrófono se abrió solo para una instrucción
-                let mut solo_comando = false;
+                let mut captura: Option<audio::Captura> = None;
+                // por qué está abierto el micrófono
+                let mut dictando = false;
+                let mut por_comando = false; // instrucción, permiso o palabra clave
                 let mut numero = 0u64;
                 let abrir = |e: &Estado| {
                     let m = motor.clone();
                     let hablando = voz.as_ref().map(|v| v.hablando.clone());
+                    let atento = e.atento.clone();
                     audio::abrir(
                         move |mut muestras, tasa| {
                             // mientras la app habla, el micrófono oye silencio: no se transcribe a sí misma
                             if hablando.as_ref().is_some_and(|h| h.load(Ordering::Relaxed)) {
                                 muestras.iter_mut().for_each(|x| *x = 0.0);
                             }
-                            let _ = m.send(Orden::Audio { muestras, tasa });
+                            let o = if atento.load(Ordering::Relaxed) {
+                                Orden::Audio { muestras, tasa }
+                            } else {
+                                Orden::Vigilia { muestras, tasa }
+                            };
+                            let _ = m.send(o);
                         },
                         e.nivel.clone(),
                     )
+                };
+                // Cierra la parte de comando; si no hay dictado, el reconocedor se vacía.
+                let fin_comando = |por_comando: &mut bool, dictando: bool| {
+                    if *por_comando {
+                        *por_comando = false;
+                        if !dictando {
+                            let _ = motor.send(Orden::Fin);
+                        }
+                    }
                 };
                 for orden in rx {
                     let orden = match orden {
@@ -125,22 +151,12 @@ impl Controlador {
                     };
                     match orden {
                         Control::Alternar => {
-                            if captura.is_none() {
-                                log("inicia dictado");
-                                match abrir(&e) {
-                                    Ok(c) => {
-                                        log(&format!("micrófono a {} Hz", c.tasa));
-                                        captura = Some(c)
-                                    }
-                                    Err(err) => drop(ui.send(ParaUi::Error(format!("micrófono: {err:#}")))),
-                                }
-                                solo_comando = false;
-                            } else {
-                                log("detiene dictado");
-                                captura = None;
+                            dictando = !dictando;
+                            log(if dictando { "inicia dictado" } else { "detiene dictado" });
+                            if !dictando {
                                 e.modo_comando.store(false, Ordering::Relaxed);
+                                por_comando = false;
                                 let _ = motor.send(Orden::Fin);
-                                e.nivel.store(0, Ordering::Relaxed);
                             }
                         }
                         Control::Comando | Control::Seguir => {
@@ -151,24 +167,19 @@ impl Controlador {
                                 }
                             }
                             e.modo_comando.store(true, Ordering::Relaxed);
-                            if captura.is_none() {
-                                match abrir(&e) {
-                                    Ok(c) => {
-                                        log(&format!("micrófono a {} Hz", c.tasa));
-                                        captura = Some(c);
-                                        solo_comando = true;
-                                    }
-                                    Err(err) => drop(ui.send(ParaUi::Error(format!("micrófono: {err:#}")))),
-                                }
+                            por_comando = true;
+                        }
+                        Control::Despertar => {
+                            log("palabra clave: escuchando instrucción");
+                            por_comando = true;
+                            if let Some(v) = &voz {
+                                v.pitido();
                             }
                         }
-                        Control::FinComando => {
-                            if solo_comando && captura.is_some() {
-                                captura = None;
-                                solo_comando = false;
-                                let _ = motor.send(Orden::Fin);
-                                e.nivel.store(0, Ordering::Relaxed);
-                            }
+                        Control::FinComando => fin_comando(&mut por_comando, dictando),
+                        Control::Vigilia(si) => {
+                            log(if si { "siempre escuchando: activo" } else { "siempre escuchando: inactivo" });
+                            e.vigilia.store(si, Ordering::Relaxed);
                         }
                         Control::Leer => match &voz {
                             Some(v) if v.hablando.load(Ordering::Relaxed) => v.callar(),
@@ -191,15 +202,7 @@ impl Controlador {
                             if let Some(v) = &voz {
                                 v.decir(format!("Claude quiere {hablada}. ¿Lo permito?"));
                             }
-                            if captura.is_none() {
-                                match abrir(&e) {
-                                    Ok(c) => {
-                                        captura = Some(c);
-                                        solo_comando = true;
-                                    }
-                                    Err(err) => drop(ui.send(ParaUi::Error(format!("micrófono: {err:#}")))),
-                                }
-                            }
+                            por_comando = true;
                             // vence a los 100 s (el servidor de permisos espera 120)
                             let tx = tx_propio.clone();
                             let n = numero;
@@ -216,11 +219,8 @@ impl Controlador {
                                     v.decir(if si { "Permitido." } else { "No lo permito." });
                                 }
                             }
-                            if solo_comando && captura.is_some() && !e.modo_comando.load(Ordering::Relaxed) {
-                                captura = None;
-                                solo_comando = false;
-                                let _ = motor.send(Orden::Fin);
-                                e.nivel.store(0, Ordering::Relaxed);
+                            if !e.modo_comando.load(Ordering::Relaxed) {
+                                fin_comando(&mut por_comando, dictando);
                             }
                         }
                         Control::Caducar(n) => {
@@ -231,16 +231,30 @@ impl Controlador {
                                     let _ = tx.send(false);
                                 }
                                 drop(p);
-                                if solo_comando && captura.is_some() {
-                                    captura = None;
-                                    solo_comando = false;
-                                    let _ = motor.send(Orden::Fin);
+                                if !e.modo_comando.load(Ordering::Relaxed) {
+                                    fin_comando(&mut por_comando, dictando);
                                 }
                             }
                         }
                         Control::Atajo(..) => unreachable!(),
                     }
-                    e.grabando.store(captura.is_some(), Ordering::Relaxed);
+                    // el audio va al reconocedor si algo lo necesita; si no, a la vigilia
+                    let pendiente = e.pendiente.lock().unwrap().is_some();
+                    e.atento.store(dictando || por_comando || pendiente || e.modo_comando.load(Ordering::Relaxed), Ordering::Relaxed);
+                    let quiere = dictando || por_comando || pendiente || e.vigilia.load(Ordering::Relaxed);
+                    if quiere && captura.is_none() {
+                        match abrir(&e) {
+                            Ok(c) => {
+                                log(&format!("micrófono a {} Hz", c.tasa));
+                                captura = Some(c);
+                            }
+                            Err(err) => drop(ui.send(ParaUi::Error(format!("micrófono: {err:#}")))),
+                        }
+                    } else if !quiere && captura.is_some() {
+                        captura = None;
+                        e.nivel.store(0, Ordering::Relaxed);
+                    }
+                    e.grabando.store(dictando, Ordering::Relaxed);
                     repintar();
                 }
             })

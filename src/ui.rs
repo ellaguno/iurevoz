@@ -59,6 +59,9 @@ pub struct App {
     esperando_comando: bool,
     /// Los atajos personalizados de GNOME ya existen.
     atajos_gnome: bool,
+    /// Mensajes del entrenamiento del detector en curso.
+    entrenando: Option<crossbeam_channel::Receiver<Result<String, String>>>,
+    progreso_entrenamiento: String,
     prueba: PruebaTeclado,
 }
 
@@ -84,6 +87,8 @@ impl App {
             voz,
             esperando_comando: false,
             atajos_gnome: crate::atajos_gnome::instalados(),
+            entrenando: None,
+            progreso_entrenamiento: String::new(),
             prueba: PruebaTeclado::default(),
         }
     }
@@ -122,6 +127,21 @@ impl App {
     }
 
     fn procesar_eventos(&mut self) {
+        // progreso del entrenamiento: Ok = paso intermedio, Err = mensaje final
+        if let Some(rx) = &self.entrenando {
+            let mut terminado = None;
+            while let Ok(m) = rx.try_recv() {
+                match m {
+                    Ok(p) => self.progreso_entrenamiento = p,
+                    Err(fin) => terminado = Some(fin),
+                }
+            }
+            if let Some(fin) = terminado {
+                self.entrenando = None;
+                self.estado = fin;
+                let _ = self.motor.tx.send(Orden::RecargarDetector);
+            }
+        }
         while let Ok(e) = self.motor.eventos.try_recv() {
             match e {
                 Evento::Estado(s) => self.estado = s,
@@ -143,6 +163,7 @@ impl App {
                     self.frases.push(Frase { id, texto, correccion: None, error: None, comando: None });
                 }
                 Evento::EsperandoComando => self.esperando_comando = true,
+                Evento::Despierto => self.esperando_comando = true,
                 Evento::Comando { id, instruccion } => {
                     self.parcial.clear();
                     self.esperando_comando = false;
@@ -206,12 +227,25 @@ impl App {
             if ui.add_enabled(self.listo && self.cfg.comandos.activos, b).clicked() {
                 self.ctl.enviar(Control::Comando);
             }
+            let vigilando = self.cfg.escucha.siempre;
+            let b = egui::Button::new(RichText::new("👂").size(18.0))
+                .selected(vigilando)
+                .min_size(egui::vec2(40.0, 40.0));
+            let ayuda = format!("Siempre escuchando: di «{}» para dar una instrucción", self.cfg.escucha.palabra);
+            if ui.add_enabled(self.listo, b).on_hover_text(ayuda).clicked() {
+                self.cfg.escucha.siempre = !vigilando;
+                self.ctl.enviar(Control::Vigilia(self.cfg.escucha.siempre));
+                self.aplicar_config();
+            }
             let hablando = self.voz.as_ref().is_some_and(|v| v.hablando.load(Ordering::Relaxed));
             let b = egui::Button::new(RichText::new(if hablando { "🔇 Callar" } else { "🔊 Leer" }).size(15.0)).min_size(egui::vec2(90.0, 40.0));
             if ui.add_enabled(self.voz.is_some(), b).on_hover_text("Lee en voz alta el texto seleccionado").clicked() {
                 self.ctl.enviar(Control::Leer);
             }
             ui.vertical(|ui| {
+                if self.cfg.escucha.siempre && !self.grabando() {
+                    ui.label(RichText::new(format!("Escuchando «{}»…", self.cfg.escucha.palabra)).color(Color32::from_rgb(60, 140, 200)));
+                }
                 ui.label(&self.estado);
                 let nivel = f32::from_bits(self.ctl.estado.nivel.load(Ordering::Relaxed));
                 let barra = egui::ProgressBar::new((nivel * 8.0).sqrt().min(1.0)).desired_width(160.0).desired_height(6.0);
@@ -361,6 +395,62 @@ impl App {
                     .changed();
                 ui.end_row();
             }
+
+            ui.label(RichText::new("Siempre escuchando").strong());
+            if ui.checkbox(&mut self.cfg.escucha.siempre, "esperar la palabra clave").changed() {
+                self.ctl.enviar(Control::Vigilia(self.cfg.escucha.siempre));
+                cambio = true;
+            }
+            ui.end_row();
+            ui.label("Palabra clave");
+            cambio |= ui.add(egui::TextEdit::singleline(&mut self.cfg.escucha.palabra).hint_text("oye compu")).lost_focus();
+            ui.end_row();
+            ui.label("Tolerancia");
+            cambio |= ui
+                .add(egui::Slider::new(&mut self.cfg.escucha.tolerancia, 0.1..=0.5))
+                .on_hover_text("Más alta: entiende más variantes, pero se activa más por error")
+                .drag_stopped();
+            ui.end_row();
+            ui.label("Detector dedicado");
+            ui.vertical(|ui| {
+                let meta = std::fs::read_to_string(crate::detector::rutas(&self.cfg.escucha.palabra).1)
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<crate::detector::Meta>(&t).ok());
+                match &meta {
+                    Some(m) => drop(ui.label(RichText::new(format!("entrenado {} · detecta {:.0} % en voces nuevas", m.fecha, m.recall * 100.0)).small())),
+                    None => drop(ui.label(RichText::new("sin entrenar: se usa Moonshine (más CPU)").small().weak())),
+                }
+                if self.entrenando.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new());
+                        ui.label(RichText::new(&self.progreso_entrenamiento).small());
+                    });
+                } else if ui
+                    .button(if meta.is_some() { "Volver a entrenar" } else { "Entrenar detector" })
+                    .on_hover_text("Genera ejemplos con las voces locales y tus grabaciones, y entrena una red pequeña (unos minutos)")
+                    .clicked()
+                {
+                    let (tx, rx) = crossbeam_channel::unbounded();
+                    let palabra = self.cfg.escucha.palabra.clone();
+                    let ctx = ui.ctx().clone();
+                    std::thread::spawn(move || {
+                        let t2 = tx.clone();
+                        let c2 = ctx.clone();
+                        let r = crate::entrenamiento::entrenar(&palabra, &move |m| {
+                            let _ = t2.send(Ok(m));
+                            c2.request_repaint();
+                        });
+                        let _ = tx.send(Err(match r {
+                            Ok(m) => format!("listo: detecta {:.0} % en voces nuevas", m.recall * 100.0),
+                            Err(e) => format!("falló el entrenamiento: {e:#}"),
+                        }));
+                        ctx.request_repaint();
+                    });
+                    self.entrenando = Some(rx);
+                    self.progreso_entrenamiento = "empezando…".into();
+                }
+            });
+            ui.end_row();
 
             ui.label(RichText::new("Voz").strong());
             cambio |= ui.checkbox(&mut self.cfg.voz.responder, "responder en voz alta").changed();
@@ -642,6 +732,9 @@ pub fn ejecutar(cfg: Config, sin_portal: bool) -> eframe::Result {
                 });
             }
             crate::control::escuchar_socket(ctl.clone());
+            if cfg.escucha.siempre {
+                ctl.enviar(Control::Vigilia(true));
+            }
             Ok(Box::new(App::new(cfg, motor, ctl, rx_ui, portal, voz)))
         }),
     )

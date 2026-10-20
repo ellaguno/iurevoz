@@ -22,6 +22,9 @@ pub const VOCES: &[(&str, &str, &str)] = &[
     ("kokoro-dora", "kokoro-int8-multi-lang-v1_0", "Kokoro · mujer (más natural)"),
     ("kokoro-alex", "kokoro-int8-multi-lang-v1_0", "Kokoro · hombre"),
     ("supertonic", "sherpa-onnx-supertonic-3-tts-int8-2026-05-11", "Supertonic 3 · multilingüe"),
+    ("piper-davefx", "vits-piper-es_ES-davefx-medium-int8", "Piper · España, hombre"),
+    ("piper-sharvard", "vits-piper-es_ES-sharvard-medium-int8", "Piper · España, dos voces"),
+    ("piper-carlfm", "vits-piper-es_ES-carlfm-x_low-int8", "Piper · España, hombre (ligera)"),
 ];
 
 fn dirs_busqueda() -> Vec<PathBuf> {
@@ -128,6 +131,19 @@ impl Sintetizador {
         Ok(Self { tts, generacion })
     }
 
+    pub fn hablantes(&self) -> i32 {
+        self.tts.num_speakers().max(1)
+    }
+
+    /// Texto con un hablante y velocidad concretos (para generar datos de entrenamiento).
+    pub fn generar_con(&self, texto: &str, hablante: i32, velocidad: f32) -> Result<(Vec<f32>, i32)> {
+        let mut g = GenerationConfig { speed: velocidad, ..Default::default() };
+        g.sid = if self.generacion.sid > 0 && hablante == 0 { self.generacion.sid } else { hablante };
+        g.extra = self.generacion.extra.clone();
+        let a = self.tts.generate_with_config(texto, &g, None::<fn(&[f32], f32) -> bool>).context("la voz no generó audio")?;
+        Ok((a.samples().to_vec(), a.sample_rate()))
+    }
+
     /// Texto → (muestras, tasa).
     pub fn generar(&self, texto: &str) -> Result<(Vec<f32>, i32)> {
         let a = self
@@ -212,6 +228,7 @@ pub fn oraciones(texto: &str) -> Vec<String> {
 
 enum Orden {
     Decir(String),
+    Pitido,
     Configurar { voz: String, velocidad: f32 },
 }
 
@@ -244,6 +261,21 @@ impl Voz {
                             }
                             clave = voz;
                             vel = velocidad;
+                        }
+                        Orden::Pitido => {
+                            // dos tonos cortos, sin TTS: respuesta inmediata al despertar
+                            let sr = 16000;
+                            let mut m = Vec::new();
+                            for (f, ms) in [(880.0f32, 90), (1320.0, 110)] {
+                                let n = sr * ms / 1000;
+                                m.extend((0..n).map(|i| {
+                                    let env = (i.min(n - i) as f32 / 160.0).min(1.0);
+                                    0.25 * env * (2.0 * std::f32::consts::PI * f * i as f32 / sr as f32).sin()
+                                }));
+                            }
+                            h.store(true, Ordering::Relaxed);
+                            let _ = reproducir(&m, sr as i32, &c);
+                            h.store(false, Ordering::Relaxed);
                         }
                         Orden::Decir(texto) => {
                             if sint.is_none() {
@@ -292,6 +324,10 @@ impl Voz {
         if !t.trim().is_empty() {
             let _ = self.tx.send(Orden::Decir(t));
         }
+    }
+
+    pub fn pitido(&self) {
+        let _ = self.tx.send(Orden::Pitido);
     }
 
     pub fn callar(&self) {

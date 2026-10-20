@@ -100,6 +100,22 @@ impl Default for Comandos {
     }
 }
 
+/// Modo «siempre escuchando» con palabra clave.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Escucha {
+    pub siempre: bool,
+    pub palabra: String,
+    /// 0 = exacto; más alto acepta más variantes (y más falsas activaciones).
+    pub tolerancia: f32,
+}
+
+impl Default for Escucha {
+    fn default() -> Self {
+        Self { siempre: false, palabra: "oye compu".into(), tolerancia: 0.34 }
+    }
+}
+
 /// Voz (TTS) local.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -128,6 +144,7 @@ pub struct Config {
     pub correccion: Correccion,
     pub comandos: Comandos,
     pub voz: VozCfg,
+    pub escucha: Escucha,
     /// Token del portal RemoteDesktop para no volver a pedir permiso.
     pub token_portal: Option<String>,
 }
@@ -143,6 +160,7 @@ impl Default for Config {
             correccion: Correccion::default(),
             comandos: Comandos::default(),
             voz: VozCfg::default(),
+            escucha: Escucha::default(),
             token_portal: None,
         }
     }

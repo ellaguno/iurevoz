@@ -8,13 +8,17 @@ mod claude;
 mod config;
 mod control;
 mod correccion;
+mod detector;
+mod entrenamiento;
 mod escritorio;
 mod modelos;
 mod motor;
 mod portal;
 mod puntuacion;
+mod rasgos;
 mod teclas;
 mod ui;
+mod vigilia;
 mod voz;
 
 use std::time::Instant;
@@ -34,6 +38,8 @@ Uso:
   iurevoz comando \"instrucción\"   ejecuta una instrucción sin interfaz (prueba del modo comando)
   iurevoz instalar-atajos       crea atajos de GNOME (Ctrl+Alt+Espacio, Ctrl+Alt+C, Ctrl+Alt+L)
   iurevoz leer | callar         lee la selección en voz alta en la instancia abierta
+  iurevoz entrenar-palabra [frase]  entrena el detector dedicado de la palabra clave
+  iurevoz vigilia A.wav         simula «siempre escuchando» con un archivo
   iurevoz decir \"texto\" [--voz CLAVE] [--guardar A.wav]
                                 habla con la voz local (claves: piper-ald, piper-claude,
                                 piper-daniela, kokoro-dora, kokoro-alex, supertonic)
@@ -121,6 +127,23 @@ fn main() -> Result<()> {
                 None => voz::reproducir(&m, sr, &std::sync::atomic::AtomicBool::new(false))?,
             }
         }
+        Some("entrenar-palabra") => {
+            let palabra = if args.len() > 1 { args[1..].join(" ") } else { Config::cargar().escucha.palabra };
+            let t = Instant::now();
+            let m = entrenamiento::entrenar(&palabra, &|m| eprintln!("{m}"))?;
+            println!(
+                "Detector de «{}» listo en {:.0} s: detecta {:.0} % en voces no vistas, umbral {:.3}, ~{:.1} falsas/hora en tus grabaciones",
+                m.palabra,
+                t.elapsed().as_secs_f32(),
+                m.recall * 100.0,
+                m.umbral,
+                m.falsas_por_hora
+            );
+        }
+        Some("vigilia") => {
+            let ruta = args.get(1).context("falta el archivo .wav")?;
+            probar_vigilia(ruta)?;
+        }
         Some("transcribir") => {
             let ruta = args.get(1).context("falta el archivo .wav")?;
             transcribir(ruta, args.iter().any(|a| a == "--corregir"))?;
@@ -203,4 +226,105 @@ fn transcribir(ruta: &str, corregir: bool) -> Result<()> {
     println!("\n{}\n", texto.trim());
     eprintln!("audio {dur:.1} s · cómputo ASR {computo:.1} s · RTF {:.2}", computo / dur);
     Ok(())
+}
+
+/// Simula el modo «siempre escuchando» con un archivo: muestra cuándo despierta, qué
+/// instrucción entiende y cuánto CPU gasta la espera.
+fn probar_vigilia(ruta: &str) -> Result<()> {
+    let cfg = Config::cargar();
+    let wav = sherpa_onnx::Wave::read(ruta).context("no pude leer el WAV")?;
+    let mut muestras = wav.samples().to_vec();
+    if wav.sample_rate() != asr::SR {
+        muestras = sherpa_onnx::LinearResampler::create(wav.sample_rate(), asr::SR).context("remuestreo")?.resample(&muestras, true);
+    }
+    let mut rec = asr::Reconocedor::cargar(&cfg)?;
+    let mut vig = vigilia::Vigilia::new(&modelos::rutas_moonshine()?.vad)?;
+    let (palabra, tol) = (cfg.escucha.palabra.clone(), cfg.escucha.tolerancia);
+    let sin_detector = std::env::args().any(|a| a == "--moonshine");
+    if !sin_detector && vig.cargar_detector(&palabra) {
+        println!("Detector dedicado de «{palabra}»");
+    } else {
+        println!("Verificación con Moonshine");
+    }
+    let paso = asr::SR as usize / 10;
+    let cpu = || {
+        let mut u = unsafe { std::mem::zeroed::<Rusage>() };
+        unsafe { getrusage(0, &mut u) };
+        u.ru_utime[0] as f64 + u.ru_utime[1] as f64 / 1e6 + u.ru_stime[0] as f64 + u.ru_stime[1] as f64 / 1e6
+    };
+    let (mut cpu_vigilia, mut seg_vigilia) = (0.0, 0.0);
+    let mut i = 0;
+    while i < muestras.len() {
+        let fin = (i + paso).min(muestras.len());
+        let c0 = cpu();
+        let despierta = vig.alimentar(&muestras[i..fin], |tramo| {
+            let t = rec.transcribir_corto(tramo);
+            let si = vigilia::coincide(&t, &palabra, tol).is_some();
+            println!("  {:6.1} s  revisa {t:?}{}", i as f32 / asr::SR as f32, if si { "  → DESPIERTA" } else { "" });
+            si
+        });
+        cpu_vigilia += cpu() - c0;
+        seg_vigilia += (fin - i) as f64 / asr::SR as f64;
+        i = fin;
+        if let Some(audio) = despierta {
+            // modo comando: se junta la instrucción hasta ~1 s de silencio tras la última frase
+            let mut texto = String::new();
+            let mut salidas = rec.alimentar(&audio);
+            // mismo criterio que la app: termina ~1 s después de la última frase, si no hay voz
+            let mut desde_final: Option<usize> = salidas.iter().any(|x| matches!(x, asr::Salida::Final(_))).then_some(0);
+            let mut hablando = false;
+            let mut esperado = 0usize;
+            while i < muestras.len() {
+                let fin = (i + paso).min(muestras.len());
+                let s = rec.alimentar(&muestras[i..fin]);
+                for x in &s {
+                    match x {
+                        asr::Salida::Final(_) => {
+                            desde_final = Some(0);
+                            hablando = false;
+                        }
+                        asr::Salida::Parcial(p) => hablando = !p.is_empty(),
+                    }
+                }
+                salidas.extend(s);
+                let n = fin - i;
+                i = fin;
+                esperado += n;
+                if let Some(d) = desde_final.as_mut() {
+                    if !hablando {
+                        *d += n;
+                    }
+                    if *d >= asr::SR as usize {
+                        break;
+                    }
+                } else if esperado >= asr::SR as usize * 8 {
+                    break; // nadie dijo nada en 8 s
+                }
+            }
+            salidas.extend(rec.terminar());
+            for s in salidas {
+                if let asr::Salida::Final(f) = s {
+                    texto.push(' ');
+                    texto.push_str(&f);
+                }
+            }
+            let instr = vigilia::quitar(texto.trim(), &palabra, tol).unwrap_or_else(|| texto.trim().to_string());
+            println!("  {:6.1} s  DESPIERTA · instrucción: {instr:?}", i as f32 / asr::SR as f32);
+            vig.reiniciar();
+        }
+    }
+    println!("\nEsperando la palabra clave: {:.2}% de un núcleo ({cpu_vigilia:.2} s de CPU en {seg_vigilia:.0} s de audio)", 100.0 * cpu_vigilia / seg_vigilia.max(1e-9));
+    Ok(())
+}
+
+/// `struct rusage` de Linux x86-64 (solo se leen los tiempos de CPU del proceso).
+#[repr(C)]
+struct Rusage {
+    ru_utime: [i64; 2],
+    ru_stime: [i64; 2],
+    _resto: [i64; 14],
+}
+
+unsafe extern "C" {
+    fn getrusage(who: i32, usage: *mut Rusage) -> i32;
 }

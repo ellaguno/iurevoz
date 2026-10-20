@@ -53,6 +53,20 @@ impl Reconocedor {
         }
     }
 
+    /// Transcribe un tramo corto aparte (para revisar la palabra clave), sin tocar el
+    /// estado del dictado. Usa Moonshine: el del rescate o el principal.
+    pub fn transcribir_corto(&self, audio: &[f32]) -> String {
+        let moon = match self {
+            Self::Nemotron(n) => n.rescate.as_ref().map(|r| &r.moon),
+            Self::Moonshine(m) => Some(&m.rec),
+        };
+        let Some(moon) = moon else { return String::new() };
+        let st = moon.create_stream();
+        st.accept_waveform(SR, audio);
+        moon.decode(&st);
+        texto_moonshine(&st)
+    }
+
     /// Cierra el dictado: empuja silencio para que salga la última frase y reinicia.
     pub fn terminar(&mut self) -> Vec<Salida> {
         let mut out = match self {
