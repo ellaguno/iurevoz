@@ -299,6 +299,7 @@ fn indice(raiz: &Path) -> Vec<PathBuf> {
 
 pub fn abrir(ruta: &str, con_editor: bool) -> Result<String> {
     let p = resolver(ruta)?;
+    crate::iure::recordar(crate::iure::Referencia::Archivo(p.clone()));
     if con_editor {
         apps::open_with(AppId::Editor, &p)?;
         return Ok(format!("abrí {} en IureEditor", p.file_name().unwrap_or_default().to_string_lossy()));
@@ -319,6 +320,7 @@ const MAX_TEXTO: usize = 6000;
 /// Texto de un archivo: txt/md directo; PDF con IureOCR (`extract_text`).
 pub fn texto(ruta: &str, desde: Option<u64>, hasta: Option<u64>) -> Result<String> {
     let p = resolver(ruta)?;
+    crate::iure::recordar(crate::iure::Referencia::Archivo(p.clone()));
     let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     let t = match ext.as_str() {
         "pdf" => {
@@ -365,6 +367,7 @@ pub fn ocr(ruta: &str, idiomas: Option<&str>) -> Result<String> {
 
 pub fn info_pdf(ruta: &str) -> Result<String> {
     let p = resolver(ruta)?;
+    crate::iure::recordar(crate::iure::Referencia::Archivo(p.clone()));
     let r = mcp(AppId::Ocr, "pdf_info", json!({"path": p}), Duration::from_secs(60))?;
     Ok(format!(
         "{} páginas, {}",

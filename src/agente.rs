@@ -52,6 +52,7 @@ fn sistema_iure() -> String {
         "Eres el ayudante de IureVoz para consultar la instancia web de Iurefficient de quien te habla: \
 proyectos y expedientes, sus tareas, vencimientos y documentos. Las herramientas son de solo lectura. \
 Para hablar de un proyecto por su nombre, búscalo primero (listar_proyectos con búsqueda) y usa su id. \
+Si piden abrir o ver algo en Iurefficient, usa abrir_en_iurefficient. \
 Responde en español, breve (dos o tres frases), sin markdown ni listas largas, porque se lee en voz alta; \
 resume y da lo más importante primero (fechas próximas, pendientes). Nunca inventes datos. Hoy es {}.",
         esc::hora_fecha().rsplit_once(',').map_or_else(|| esc::hora_fecha(), |(f, _)| f.to_string())
@@ -91,6 +92,26 @@ fn herramientas_suite() -> Value {
         f("transcribir", "Transcribe un audio con IureTranscribe y devuelve el texto.", json!({"ruta": s("ruta del audio")}), &["ruta"]),
         f("leer_transcripcion", "Devuelve el texto de una transcripción ya hecha.", json!({"ruta": s("ruta del audio o de la transcripción")}), &["ruta"]),
     ])
+}
+
+fn herramienta_abrir_iure() -> Value {
+    json!({"type": "function", "function": {"name": "abrir_en_iurefficient",
+        "description": "Abre Iurefficient en el navegador: un proyecto (por id o nombre), una tarea (por id), o la agenda, los vencimientos, la hoja de horas, las notificaciones, las tareas o el inicio.",
+        "parameters": {"type": "object", "properties": {
+            "que": {"type": "string", "enum": ["proyecto", "tarea", "agenda", "vencimientos", "horas", "notificaciones", "tareas", "inicio"]},
+            "id": {"type": "string", "description": "id del proyecto o la tarea, si se conoce"},
+            "nombre": {"type": "string", "description": "nombre del proyecto, si no hay id"}},
+            "required": ["que"]}}})
+}
+
+/// «Ábrelo», «ábrela», «abre eso»: abrir lo último mencionado (se decide en código).
+pub fn es_abrelo(instruccion: &str) -> bool {
+    let t: String = crate::correccion::palabras(instruccion).join(" ");
+    matches!(
+        t.as_str(),
+        "ábrelo" | "abrelo" | "ábrela" | "abrela" | "abre eso" | "abre ese" | "abre esa" | "ábrelo por favor" | "ábrela por favor"
+            | "ábrelo en el navegador" | "ábrela en el navegador" | "muéstramelo" | "muéstramela"
+    )
 }
 
 /// Acciones que el agente necesita del resto de la app.
@@ -204,7 +225,13 @@ impl Agente {
             Modo::Principal => herramientas(self.delegar.is_some()),
             Modo::Suite => herramientas_suite(),
             // si no está conectado, sin herramientas: el modelo lo dirá con el error de abajo
-            Modo::Iure => crate::iure::herramientas().unwrap_or_else(|_| json!([])),
+            Modo::Iure => {
+                let mut v = crate::iure::herramientas().unwrap_or_else(|_| json!([]));
+                if let Some(a) = v.as_array_mut() {
+                    a.push(herramienta_abrir_iure());
+                }
+                v
+            }
         }
     }
 
@@ -239,6 +266,19 @@ impl Agente {
     pub fn ejecutar(&self, instruccion: &str, historial: &[Value], mut paso: impl FnMut(&str)) -> Result<Informe> {
         *self.instruccion.lock().unwrap() = instruccion.to_string();
         // instancia web o apps de la suite: directo al sub-agente, sin pasar por el modelo principal
+        if self.modo == Modo::Principal && es_abrelo(instruccion) {
+            let r = crate::iure::abrir_lo_ultimo();
+            let texto = match &r {
+                Ok(t) => t.clone(),
+                Err(e) => format!("{e:#}"),
+            };
+            paso(&format!("abrir lo último → {texto}"));
+            let respuesta = match r {
+                Ok(t) => format!("Listo, {t}."),
+                Err(e) => format!("{}.", format!("{e:#}").trim_end_matches('.')),
+            };
+            return Ok(Informe { acciones: vec![texto], respuesta });
+        }
         let directo = if self.modo != Modo::Principal {
             None
         } else if es_de_iurefficient(instruccion) {
@@ -359,6 +399,7 @@ impl Agente {
                 let hecho = if inf.acciones.is_empty() { String::new() } else { format!(" (hice: {})", inf.acciones.join("; ")) };
                 Ok(format!("{}{hecho}", inf.respuesta))
             }
+            "abrir_en_iurefficient" => crate::iure::abrir(&s("que")?, a["id"].as_str(), a["nombre"].as_str()),
             n if self.modo == Modo::Iure && crate::iure::es_herramienta(n) => crate::iure::llamar(n, a.clone()),
             "archivos" => crate::suite::archivos(a["carpeta"].as_str(), a["buscar"].as_str()),
             "abrir_archivo" => crate::suite::abrir(&s("ruta")?, a["con_editor"].as_bool().unwrap_or(false)),
@@ -559,6 +600,13 @@ fn args_cortos(a: &Value) -> String {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn abrelo() {
+        assert!(es_abrelo("Ábrelo."));
+        assert!(es_abrelo("ábrela por favor"));
+        assert!(!es_abrelo("abre la calculadora"));
+    }
 
     #[test]
     fn enrutamiento_iurefficient() {

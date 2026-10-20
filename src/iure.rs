@@ -205,6 +205,7 @@ pub fn es_herramienta(nombre: &str) -> bool {
 /// Llama una herramienta de la instancia; el resultado se acota para el modelo.
 pub fn llamar(nombre: &str, args: Value) -> Result<String> {
     let r = con_cliente(|c| rt().block_on(c.mcp.call(nombre, args)))?;
+    recordar_de(&r);
     let texto = match r {
         Value::String(s) => s,
         v => v.to_string(),
@@ -247,4 +248,124 @@ pub fn panorama(renovar: bool, avisar: impl Fn() + Send + 'static) -> Option<Pan
         });
     }
     actual
+}
+
+// ── F3 · «ábrelo» ────────────────────────────────────────────────────────────
+
+/// Lo último de lo que se habló, para que «ábrelo» sepa qué abrir.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Referencia {
+    Proyecto { id: String, titulo: String },
+    Tarea { id: String, titulo: String },
+    Archivo(std::path::PathBuf),
+}
+
+static ULTIMA: Mutex<Option<Referencia>> = Mutex::new(None);
+
+pub fn recordar(r: Referencia) {
+    *ULTIMA.lock().unwrap() = Some(r);
+}
+
+pub fn ultima() -> Option<Referencia> {
+    ULTIMA.lock().unwrap().clone()
+}
+
+/// Toma de un resultado del MCP el proyecto o la tarea de la que se habla: si hay uno solo
+/// (o es una ficha), ese; con varios no se adivina.
+fn recordar_de(v: &Value) {
+    let txt = |x: &Value| x.as_str().unwrap_or("").to_string();
+    let id = |x: &Value| match x {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    };
+    // ficha de proyecto
+    if v.get("codigo").is_some() && !id(&v["id"]).is_empty() {
+        return recordar(Referencia::Proyecto { id: id(&v["id"]), titulo: txt(&v["titulo"]) });
+    }
+    if let Some(ps) = v["proyectos"].as_array().filter(|a| a.len() == 1) {
+        return recordar(Referencia::Proyecto { id: id(&ps[0]["id"]), titulo: txt(&ps[0]["titulo"]) });
+    }
+    for lista in ["tareas", "vencimientos"] {
+        if let Some(ts) = v[lista].as_array().filter(|a| a.len() == 1) {
+            let t = &ts[0];
+            let tid = if t["tarea_id"].is_null() { id(&t["id"]) } else { id(&t["tarea_id"]) };
+            return recordar(Referencia::Tarea { id: tid, titulo: txt(&t["titulo"]) });
+        }
+    }
+    if let Some(p) = v.get("proyecto").filter(|p| p.is_object() && !id(&p["id"]).is_empty()) {
+        recordar(Referencia::Proyecto { id: id(&p["id"]), titulo: txt(&p["titulo"]) });
+    }
+}
+
+/// Abre la instancia en el navegador. `que`: proyecto, tarea, agenda, vencimientos, horas,
+/// notificaciones, tareas o inicio. Para proyecto/tarea sin id se usa `nombre` (se busca) o
+/// lo último mencionado.
+pub fn abrir(que: &str, id: Option<&str>, nombre: Option<&str>) -> Result<String> {
+    let acc = cuenta().context("no hay cuenta de Iurefficient en este equipo")?;
+    let base = acc.base.as_str().trim_end_matches('/').to_string();
+    let que = que.trim().to_lowercase();
+    let (ruta, desc) = match que.as_str() {
+        "agenda" | "calendario" => ("/dashboard/calendar".to_string(), "la agenda".to_string()),
+        "vencimientos" | "plazos" => ("/dashboard/deadlines".into(), "los vencimientos".into()),
+        "horas" | "hoja de horas" | "timesheet" => ("/dashboard/timesheet".into(), "la hoja de horas".into()),
+        "notificaciones" => ("/dashboard/notifications".into(), "las notificaciones".into()),
+        "tareas" => ("/dashboard/tasks".into(), "las tareas".into()),
+        "inicio" | "tablero" | "iurefficient" => ("/dashboard".into(), "Iurefficient".into()),
+        "tarea" => {
+            let (tid, t) = match (id, ultima()) {
+                (Some(i), _) => (i.to_string(), "la tarea".to_string()),
+                (None, Some(Referencia::Tarea { id, titulo })) => (id, format!("la tarea «{titulo}»")),
+                _ => bail!("no sé qué tarea abrir: dime su nombre o pregunta primero por ella"),
+            };
+            (format!("/dashboard/tasks/{tid}"), t)
+        }
+        _ => {
+            // proyecto (o cualquier otra cosa que suene a expediente)
+            let (pid, t) = if let Some(i) = id {
+                (i.to_string(), "el proyecto".to_string())
+            } else if let Some(n) = nombre.filter(|n| !n.trim().is_empty()) {
+                let r = con_cliente(|c| rt().block_on(c.mcp.call("listar_proyectos", json!({"busqueda": n, "limite": 1}))))?;
+                let p = r["proyectos"].get(0).with_context(|| format!("no encontré un proyecto «{n}»"))?;
+                let pid = p["id"].as_str().map(str::to_string).unwrap_or_else(|| p["id"].to_string());
+                let titulo = p["titulo"].as_str().unwrap_or(n).to_string();
+                recordar(Referencia::Proyecto { id: pid.clone(), titulo: titulo.clone() });
+                (pid, format!("el proyecto «{titulo}»"))
+            } else if let Some(Referencia::Proyecto { id, titulo }) = ultima() {
+                (id, format!("el proyecto «{titulo}»"))
+            } else {
+                bail!("no sé qué proyecto abrir: dime su nombre");
+            };
+            (format!("/dashboard/cases/{pid}"), t)
+        }
+    };
+    let url = format!("{base}{ruta}");
+    Command::new("gio").args(["open", &url]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    Ok(format!("abrí {desc} en el navegador"))
+}
+
+/// «Ábrelo»: abre lo último mencionado, sea de la instancia o un archivo.
+pub fn abrir_lo_ultimo() -> Result<String> {
+    match ultima() {
+        Some(Referencia::Proyecto { id, titulo }) => abrir("proyecto", Some(&id), None).map(|_| format!("abrí el proyecto «{titulo}» en el navegador")),
+        Some(Referencia::Tarea { id, titulo }) => abrir("tarea", Some(&id), None).map(|_| format!("abrí la tarea «{titulo}» en el navegador")),
+        Some(Referencia::Archivo(p)) => crate::suite::abrir(&p.to_string_lossy(), false),
+        None => bail!("no sé qué abrir: aún no hemos hablado de ningún proyecto, tarea o archivo"),
+    }
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    #[test]
+    fn recuerda_lo_mencionado() {
+        recordar_de(&json!({"proyectos": [{"id": "abc", "titulo": "Heralva"}], "total": 1}));
+        assert_eq!(ultima(), Some(Referencia::Proyecto { id: "abc".into(), titulo: "Heralva".into() }));
+        // con varios no se adivina
+        recordar_de(&json!({"proyectos": [{"id": "x"}, {"id": "y"}]}));
+        assert_eq!(ultima(), Some(Referencia::Proyecto { id: "abc".into(), titulo: "Heralva".into() }));
+        recordar_de(&json!({"vencimientos": [{"tarea_id": 7, "titulo": "Informe"}]}));
+        assert_eq!(ultima(), Some(Referencia::Tarea { id: "7".into(), titulo: "Informe".into() }));
+    }
 }
