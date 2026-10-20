@@ -252,5 +252,8 @@ mod pruebas {
         assert_eq!(coincide("La computadora", "oye compu", t), None);
         assert_eq!(quitar("Oye compu, abre la calculadora", "oye compu", t).as_deref(), Some("abre la calculadora"));
         assert_eq!(quitar("Oye compu", "oye compu", t).as_deref(), Some(""));
+        // tras despertar se tolera más: «Oye Ku» es la palabra clave mal oída
+        assert_eq!(quitar("Oye Ku, ¿quién fue Porfirio Díaz?", "oye compu", 0.5).as_deref(), Some("quién fue Porfirio Díaz?"));
+        assert_eq!(quitar("Oye, ¿cuánto es dos más dos?", "oye compu", 0.5), None);
     }
 }

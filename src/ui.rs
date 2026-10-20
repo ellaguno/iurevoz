@@ -385,8 +385,8 @@ impl App {
             cambio |= ui.checkbox(&mut self.cfg.comandos.activos, "entender instrucciones (sin shell)").changed();
             ui.end_row();
             if self.cfg.comandos.activos {
-                ui.label("Prefijo hablado");
-                cambio |= ui.add(egui::TextEdit::singleline(&mut self.cfg.comandos.prefijo).hint_text("computadora")).lost_focus();
+                ui.label("");
+                ui.label(RichText::new(format!("Al dictar, una frase que empiece con «{}» también es instrucción.", self.cfg.escucha.palabra)).small().weak());
                 ui.end_row();
                 cambio |= ajustes_llm(ui, "cmd", &mut self.cfg.comandos.llm);
                 ui.label("Claude Code");
@@ -679,6 +679,12 @@ impl eframe::App for App {
         self.procesar_eventos();
         if ui.input(|i| i.key_pressed(egui::Key::F9)) {
             self.alternar();
+        }
+        // Esc calla la voz (con el micrófono en silencio mientras habla, no oiría «cállate»)
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if let Some(v) = &self.voz {
+                v.callar();
+            }
         }
         egui::Panel::top("barra").show(ui, |ui| {
             ui.add_space(6.0);

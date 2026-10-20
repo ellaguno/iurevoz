@@ -196,12 +196,12 @@ pub fn para_voz(texto: &str) -> String {
             }
             // fragmentos de shell o código: sin letras suficientes para leerse
             let letras = limpio.chars().filter(|c| c.is_alphabetic()).count();
-            let raros = limpio.chars().filter(|c| matches!(c, '$' | '|' | '&' | '>' | '<' | '{' | '}' | '[' | ']' | '=' | '\\' | '^' | '~' | '*' | '#' | '`')).count();
+            let raros = limpio.chars().filter(|c| matches!(c, '$' | '|' | '>' | '<' | '{' | '}' | '[' | ']' | '=' | '\\' | '^' | '~' | '*' | '#' | '`')).count();
             if raros > 0 && (raros * 2 >= letras || limpio.starts_with('$') || limpio.starts_with('-')) {
                 return None;
             }
             // las marcas de formato se quitan; los demás símbolos separan palabras
-            let p = p.replace(['`', '*', '#'], "").replace(['|', '_', '<', '>', '{', '}', '[', ']', '\\', '$', '^', '~'], " ").replace('→', " a ").replace('•', " ");
+            let p = p.replace('&', " y ").replace(['`', '*', '#'], "").replace(['|', '_', '<', '>', '{', '}', '[', ']', '\\', '$', '^', '~'], " ").replace('→', " a ").replace('•', " ");
             let p = p.trim().to_string();
             (!p.is_empty()).then_some(p)
         })
@@ -227,7 +227,9 @@ pub fn oraciones(texto: &str) -> Vec<String> {
 }
 
 enum Orden {
-    Decir(String),
+    /// Texto y la «generación» en que se pidió: callar sube la generación y así se
+    /// descarta todo lo que estaba en cola, no solo la frase en curso.
+    Decir(String, u64),
     Pitido,
     Configurar { voz: String, velocidad: f32 },
 }
@@ -239,6 +241,7 @@ pub struct Voz {
     tx: Sender<Orden>,
     pub hablando: Arc<AtomicBool>,
     callar: Arc<AtomicBool>,
+    generacion: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Voz {
@@ -246,7 +249,8 @@ impl Voz {
         let (tx, rx) = unbounded::<Orden>();
         let hablando = Arc::new(AtomicBool::new(false));
         let callar = Arc::new(AtomicBool::new(false));
-        let (h, c) = (hablando.clone(), callar.clone());
+        let generacion = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (h, c, gen_hilo) = (hablando.clone(), callar.clone(), generacion.clone());
         std::thread::Builder::new()
             .name("voz".into())
             .spawn(move || {
@@ -277,7 +281,10 @@ impl Voz {
                             let _ = reproducir(&m, sr as i32, &c);
                             h.store(false, Ordering::Relaxed);
                         }
-                        Orden::Decir(texto) => {
+                        Orden::Decir(texto, g) => {
+                            if g != gen_hilo.load(Ordering::Relaxed) {
+                                continue; // se pidió callar después de encolarlo
+                            }
                             if sint.is_none() {
                                 if let Some(m) = falta(&clave) {
                                     avisar(format!("Descargando la voz {m}…"));
@@ -297,7 +304,7 @@ impl Voz {
                             c.store(false, Ordering::Relaxed);
                             h.store(true, Ordering::Relaxed);
                             for o in oraciones(&texto) {
-                                if c.load(Ordering::Relaxed) {
+                                if c.load(Ordering::Relaxed) || g != gen_hilo.load(Ordering::Relaxed) {
                                     break;
                                 }
                                 match sint.as_ref().unwrap().generar(&o) {
@@ -316,13 +323,13 @@ impl Voz {
                 }
             })
             .expect("hilo de voz");
-        Self { tx, hablando, callar }
+        Self { tx, hablando, callar, generacion }
     }
 
     pub fn decir(&self, texto: impl Into<String>) {
         let t = para_voz(&texto.into());
         if !t.trim().is_empty() {
-            let _ = self.tx.send(Orden::Decir(t));
+            let _ = self.tx.send(Orden::Decir(t, self.generacion.load(Ordering::Relaxed)));
         }
     }
 
@@ -330,7 +337,9 @@ impl Voz {
         let _ = self.tx.send(Orden::Pitido);
     }
 
+    /// Calla lo que esté diciendo y descarta todo lo pendiente.
     pub fn callar(&self) {
+        self.generacion.fetch_add(1, Ordering::Relaxed);
         self.callar.store(true, Ordering::Relaxed);
     }
 
@@ -400,5 +409,6 @@ mod pruebas {
         assert_eq!(para_voz("Mira https://es.wikipedia.org/wiki/Amparo, ahí está."), "Mira un enlace a es.wikipedia.org, ahí está.");
         assert_eq!(para_voz("Hecho:\n```bash\nls -la $HOME\n```\nListo."), "Hecho: Listo.");
         assert_eq!(para_voz("**Importante**: el paso → siguiente"), "Importante: el paso a siguiente");
+        assert_eq!(para_voz("Juárez & Díaz"), "Juárez y Díaz");
     }
 }

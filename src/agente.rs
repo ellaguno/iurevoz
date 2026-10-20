@@ -21,6 +21,7 @@ Usa SOLO las herramientas disponibles; si algo no se puede hacer con ellas, dilo
 Si la instrucción suena a abrir algo (aunque esté mal escrita, p. ej. «apre» o «habre»), usa abrir_aplicacion. \
 Nunca digas que hiciste o harás algo sin haber llamado la herramienta correspondiente. \
 Para cualquier cuenta usa la herramienta calcular, nunca calcules de memoria. \
+Si te preguntan algo de conocimiento general, responde tú en una o dos frases; busca en la web solo si lo piden. \
 Cuando termines responde en español, en una o dos frases cortas, porque tu respuesta se lee en voz alta. \
 No uses markdown ni listas. La persona está en México: moneda en pesos, IVA del 16 %. \
 Si una cuenta es ambigua, haz la interpretación más común y dila en la respuesta. Si la instrucción completa o responde a algo de los mensajes anteriores \
@@ -48,7 +49,7 @@ fn herramientas(con_claude: bool) -> Value {
         f("volumen", "Cambia el volumen del sistema.", json!({"accion": {"type": "string", "enum": ["subir", "bajar", "silenciar", "activar"]}, "cantidad": {"type": "integer", "description": "porcentaje, 10 por omisión"}}), &["accion"]),
         f("hora_fecha", "Da la fecha y hora actuales.", json!({}), &[]),
         f("leer_seleccion", "Lee en voz alta el texto seleccionado (o el del portapapeles).", json!({}), &[]),
-        f("leer_pagina", "Descarga una página web y lee en voz alta su texto principal.", json!({"url": s("URL de la página")}), &["url"]),
+        f("leer_pagina", "Lee en voz alta el texto de un artículo web concreto, solo si el usuario pide que se lo lean. Nunca con páginas de buscadores.", json!({"url": s("URL del artículo")}), &["url"]),
     ]);
     if con_claude {
         v.as_array_mut().unwrap().push(f(

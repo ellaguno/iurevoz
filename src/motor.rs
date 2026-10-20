@@ -174,30 +174,6 @@ struct Rutas {
     control: Sender<Control>,
 }
 
-/// Si la frase empieza con el prefijo («computadora, abre…»), devuelve el resto. Tolera
-/// un artículo o «oye» delante y variantes que comparten raíz («el computador», «computadoras»).
-/// `tolerante` solo en modo comando: al dictar, «la computadora está lenta» es texto.
-fn quitar_prefijo(frase: &str, prefijo: &str, tolerante: bool) -> Option<String> {
-    let norm = |s: &str| crate::correccion::palabras(s);
-    let p = norm(prefijo);
-    let mut f = norm(frase);
-    let mut saltadas = 0;
-    while tolerante && f.len() > p.len() && matches!(f[0].as_str(), "el" | "la" | "oye" | "hey" | "ok") && p.first().is_some_and(|x| *x != f[0]) {
-        f.remove(0);
-        saltadas += 1;
-    }
-    let parecida = |a: &str, b: &str| a == b || (tolerante && b.chars().count() >= 8 && a.chars().take(8).eq(b.chars().take(8)));
-    if p.is_empty() || f.len() < p.len() || !f.iter().zip(&p).all(|(a, b)| parecida(a, b)) {
-        return None;
-    }
-    // se corta en el texto original tras tantas palabras como tenga el prefijo
-    let mut resto = frase;
-    for _ in 0..p.len() + saltadas {
-        resto = resto.trim_start_matches(|c: char| !c.is_alphanumeric());
-        resto = resto.trim_start_matches(char::is_alphanumeric);
-    }
-    Some(resto.trim_start_matches(|c: char| !c.is_alphanumeric()).trim().to_string())
-}
 
 fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
     let mut rec = cargar(&cfg, &ev);
@@ -246,16 +222,15 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                         continue;
                     }
                     // ¿empieza una instrucción?
+                    let palabra = &cfg.escucha.palabra;
                     let inicio = if modo(&rutas) {
-                        // se quitan la palabra clave y el prefijo si vienen al inicio
-                        let sin_clave = crate::vigilia::quitar(&t, &cfg.escucha.palabra, cfg.escucha.tolerancia).unwrap_or_else(|| t.clone());
-                        if sin_clave.trim().is_empty() {
-                            Some(String::new())
-                        } else {
-                            Some(quitar_prefijo(&sin_clave, &cfg.comandos.prefijo, true).filter(|r| !r.is_empty()).unwrap_or(sin_clave))
-                        }
+                        // Ya se sabe que viene una instrucción: la palabra clave se quita aunque el
+                        // ASR la haya oído mal («Oye Ku»), con más tolerancia que al dictar.
+                        let tol = cfg.escucha.tolerancia.max(0.5);
+                        Some(crate::vigilia::quitar(&t, palabra, tol).unwrap_or_else(|| t.clone()))
                     } else if cfg.comandos.activos {
-                        quitar_prefijo(&t, &cfg.comandos.prefijo, false)
+                        // al dictar, la misma palabra clave al inicio de una frase la vuelve instrucción
+                        crate::vigilia::quitar(&t, palabra, cfg.escucha.tolerancia)
                     } else {
                         None
                     };
@@ -648,16 +623,4 @@ mod pruebas {
         assert_eq!(para_claude("Clave, instala htop").as_deref(), Some("instala htop"));
     }
 
-    #[test]
-    fn prefijo() {
-        // al dictar: estricto
-        assert_eq!(quitar_prefijo("Computadora, abre la calculadora", "computadora", false).as_deref(), Some("abre la calculadora"));
-        assert_eq!(quitar_prefijo("computadora", "computadora", false).as_deref(), Some(""));
-        assert_eq!(quitar_prefijo("La computadora está lenta", "computadora", false), None);
-        assert_eq!(quitar_prefijo("Oye Iure, ¿qué hora es?", "oye iure", false).as_deref(), Some("qué hora es?"));
-        // en modo comando: tolera artículo y variantes
-        assert_eq!(quitar_prefijo("El computador sube el volumen", "computadora", true).as_deref(), Some("sube el volumen"));
-        assert_eq!(quitar_prefijo("Mi computadora está lenta", "computadora", true), None);
-        assert_eq!(quitar_prefijo("Computación es una carrera", "computadora", true), None);
-    }
 }

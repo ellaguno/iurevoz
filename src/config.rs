@@ -89,8 +89,6 @@ impl Correccion {
 #[serde(default)]
 pub struct Comandos {
     pub activos: bool,
-    /// Palabra que, al inicio de una frase dictada, la convierte en instrucción.
-    pub prefijo: String,
     /// LLM que interpreta (mismos campos que la corrección).
     pub llm: Correccion,
     /// Etapa 2: permitir delegar a Claude Code (cuenta del usuario), con confirmación.
@@ -101,7 +99,7 @@ impl Default for Comandos {
     fn default() -> Self {
         // para instrucciones conviene un modelo que razone mejor aunque sea más lento
         let llm = Correccion { activa: true, modelo: "qwen3.5-4b".into(), ..Correccion::default() };
-        Self { activos: true, prefijo: "computadora".into(), llm, claude: true }
+        Self { activos: true, llm, claude: true }
     }
 }
 

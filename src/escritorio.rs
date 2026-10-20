@@ -391,6 +391,11 @@ pub fn seleccion() -> Result<String> {
 /// Descarga una página y extrae el texto legible (párrafos, títulos, listas).
 pub fn texto_de_pagina(url: &str) -> Result<String> {
     let url = if url.starts_with("http") { url.to_string() } else { format!("https://{url}") };
+    // una página de resultados no es un artículo: se leerían menús y enlaces
+    let host = url.split('/').nth(2).unwrap_or("").to_lowercase();
+    if ["duckduckgo.", "google.", "bing.", "search.yahoo.", "startpage.", "ecosia."].iter().any(|b| host.contains(b)) {
+        bail!("esa es una página de resultados de búsqueda; no se lee. Responde tú brevemente o abre un resultado concreto");
+    }
     let mut r = ureq::get(&url).header("User-Agent", "Mozilla/5.0 iurevoz").call()?;
     let html = r.body_mut().with_config().limit(4 << 20).read_to_string()?;
     let texto = extraer_texto(&html);
