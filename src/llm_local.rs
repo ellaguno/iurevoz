@@ -197,15 +197,8 @@ pub fn url(clave: &str) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(if std::env::var_os("IUREVOZ_LOG").is_some() { Stdio::inherit() } else { Stdio::null() });
-    // si la app muere, el servidor también
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        cmd.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-            Ok(())
-        });
-    }
-    let hijo = cmd.spawn().context("no pude arrancar llama-server")?;
+    // si la app muere, el servidor también (lanzado desde un hilo que dura lo que la app)
+    let hijo = crate::procesos::lanzar(cmd).context("no pude arrancar llama-server")?;
     *s = Some(Servidor { hijo, clave: clave.to_string(), puerto });
 
     // espera a que cargue el modelo

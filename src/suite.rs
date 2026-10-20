@@ -34,14 +34,7 @@ impl ClienteMcp {
         let mut cmd = Command::new(bin);
         cmd.arg("--mcp").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         // si IureVoz muere, el servidor también
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            cmd.pre_exec(|| {
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-                Ok(())
-            });
-        }
-        let mut hijo = cmd.spawn().with_context(|| format!("no pude arrancar {} --mcp", def.name))?;
+        let mut hijo = crate::procesos::lanzar(cmd).with_context(|| format!("no pude arrancar {} --mcp", def.name))?;
         let entrada = hijo.stdin.take().unwrap();
         let salida = BufReader::new(hijo.stdout.take().unwrap());
         let mut c = Self { hijo, entrada, salida, siguiente: 1 };

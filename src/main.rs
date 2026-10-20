@@ -15,6 +15,7 @@ mod llm_local;
 mod modelos;
 mod motor;
 mod portal;
+mod procesos;
 mod puntuacion;
 mod rasgos;
 mod suite;
