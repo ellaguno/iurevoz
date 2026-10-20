@@ -28,6 +28,12 @@ pub enum Control {
     Leer,
     /// Atajo global: (id, pulsado).
     Atajo(String, bool),
+    /// Pedir permiso al usuario: descripción y a quién avisar la decisión.
+    Permiso(String, Sender<bool>),
+    /// Respuesta del usuario (botones o voz) al permiso pendiente.
+    Responder(bool),
+    /// El permiso con este número venció sin respuesta.
+    Caducar(u64),
 }
 
 /// Avisos para la interfaz que no son del motor.
@@ -43,6 +49,8 @@ pub struct Estado {
     pub nivel: Arc<AtomicU32>,
     /// La próxima frase es una instrucción, no dictado.
     pub modo_comando: Arc<AtomicBool>,
+    /// Permiso que espera respuesta: (número, descripción, a quién avisar).
+    pub pendiente: Arc<std::sync::Mutex<Option<(u64, String, Sender<bool>)>>>,
 }
 
 impl Estado {
@@ -51,6 +59,7 @@ impl Estado {
             grabando: Arc::new(AtomicBool::new(false)),
             nivel: Arc::new(AtomicU32::new(0)),
             modo_comando: Arc::new(AtomicBool::new(false)),
+            pendiente: Default::default(),
         }
     }
 }
@@ -79,6 +88,7 @@ impl Controlador {
         repintar: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         let e = estado.clone();
+        let tx_propio = tx.clone();
         std::thread::Builder::new()
             .name("control".into())
             .spawn(move || {
@@ -86,6 +96,7 @@ impl Controlador {
                 let mut captura = None;
                 // el micrófono se abrió solo para una instrucción
                 let mut solo_comando = false;
+                let mut numero = 0u64;
                 let abrir = |e: &Estado| {
                     let m = motor.clone();
                     let hablando = voz.as_ref().map(|v| v.hablando.clone());
@@ -166,6 +177,63 @@ impl Controlador {
                             }
                             None => drop(ui.send(ParaUi::Error("la voz está desactivada".into()))),
                         },
+                        Control::Permiso(desc, tx) => {
+                            numero += 1;
+                            log(&format!("permiso #{numero}: {desc}"));
+                            // un permiso anterior sin responder se niega
+                            if let Some((_, _, viejo)) = e.pendiente.lock().unwrap().replace((numero, desc.clone(), tx)) {
+                                let _ = viejo.send(false);
+                            }
+                            if let Some(v) = &voz {
+                                v.decir(format!("Claude quiere {desc}. ¿Lo permito?"));
+                            }
+                            if captura.is_none() {
+                                match abrir(&e) {
+                                    Ok(c) => {
+                                        captura = Some(c);
+                                        solo_comando = true;
+                                    }
+                                    Err(err) => drop(ui.send(ParaUi::Error(format!("micrófono: {err:#}")))),
+                                }
+                            }
+                            // vence a los 100 s (el servidor de permisos espera 120)
+                            let tx = tx_propio.clone();
+                            let n = numero;
+                            std::thread::spawn(move || {
+                                std::thread::sleep(std::time::Duration::from_secs(100));
+                                let _ = tx.send(Control::Caducar(n));
+                            });
+                        }
+                        Control::Responder(si) => {
+                            if let Some((n, desc, tx)) = e.pendiente.lock().unwrap().take() {
+                                log(&format!("permiso #{n} {}: {desc}", if si { "concedido" } else { "negado" }));
+                                let _ = tx.send(si);
+                                if let Some(v) = &voz {
+                                    v.decir(if si { "Permitido." } else { "No lo permito." });
+                                }
+                            }
+                            if solo_comando && captura.is_some() && !e.modo_comando.load(Ordering::Relaxed) {
+                                captura = None;
+                                solo_comando = false;
+                                let _ = motor.send(Orden::Fin);
+                                e.nivel.store(0, Ordering::Relaxed);
+                            }
+                        }
+                        Control::Caducar(n) => {
+                            let mut p = e.pendiente.lock().unwrap();
+                            if p.as_ref().is_some_and(|(m, ..)| *m == n) {
+                                if let Some((_, desc, tx)) = p.take() {
+                                    log(&format!("permiso #{n} vencido: {desc}"));
+                                    let _ = tx.send(false);
+                                }
+                                drop(p);
+                                if solo_comando && captura.is_some() {
+                                    captura = None;
+                                    solo_comando = false;
+                                    let _ = motor.send(Orden::Fin);
+                                }
+                            }
+                        }
                         Control::Atajo(..) => unreachable!(),
                     }
                     e.grabando.store(captura.is_some(), Ordering::Relaxed);
@@ -226,11 +294,29 @@ pub fn escuchar_socket(ctl: Controlador) {
         .spawn(move || {
             for c in l.incoming().flatten() {
                 let mut orden = String::new();
-                let _ = (&c).take(64).read_to_string(&mut orden);
+                let _ = (&c).take(16 * 1024).read_to_string(&mut orden);
+                if let Some(json) = orden.trim().strip_prefix("permiso ") {
+                    // petición de `iurevoz mcp-permisos`: se responde «si» o «no» por el mismo socket
+                    let desc = serde_json::from_str::<serde_json::Value>(json)
+                        .ok()
+                        .and_then(|v| v["descripcion"].as_str().map(str::to_string))
+                        .unwrap_or_else(|| "hacer una acción".into());
+                    let ctl = ctl.clone();
+                    std::thread::spawn(move || {
+                        let (tx, rx) = crossbeam_channel::bounded(1);
+                        ctl.enviar(Control::Permiso(desc, tx));
+                        let si = rx.recv_timeout(std::time::Duration::from_secs(110)).unwrap_or(false);
+                        let mut c = c;
+                        let _ = c.write_all(if si { b"si" } else { b"no" });
+                    });
+                    continue;
+                }
                 match orden.trim() {
                     "alternar" => ctl.enviar(Control::Alternar),
                     "comando" => ctl.enviar(Control::Comando),
                     "leer" | "callar" => ctl.enviar(Control::Leer),
+                    // solo se puede negar desde fuera: aprobar exige al usuario (voz o botón)
+                    "rechazar" => ctl.enviar(Control::Responder(false)),
                     _ => {}
                 }
             }

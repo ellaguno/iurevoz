@@ -138,8 +138,9 @@ fn aplicaciones() -> Vec<App> {
 }
 
 pub fn abrir_aplicacion(nombre: &str) -> Result<String> {
-    // «mi excel», «el navegador»: los posesivos y artículos no son parte del nombre
-    let q = normalizar(nombre.trim());
+    // «mi excel», «el navegador»: los posesivos y artículos no son parte del nombre;
+    // «libreoffice-calc» es «libreoffice calc»
+    let q = normalizar(&nombre.trim().replace(['-', '_'], " "));
     let q = ["mi ", "el ", "la ", "los ", "las ", "un ", "una "].iter().fold(q, |q, p| q.strip_prefix(p).map(str::to_string).unwrap_or(q));
     if q.is_empty() {
         bail!("falta el nombre de la aplicación");
@@ -488,6 +489,15 @@ mod pruebas {
     fn extrae_parrafos() {
         let h = "<html><script>x()</script><nav><p>menu uno dos</p></nav><h1>El título del artículo</h1><p>Primer párrafo con <b>texto</b> &amp; más.</p></html>";
         assert_eq!(extraer_texto(h), "El título del artículo\nPrimer párrafo con texto & más.");
+    }
+
+    #[test]
+    fn guiones_como_espacios() {
+        // depende de LibreOffice instalado; si no está, no prueba nada
+        if indice().iter().any(|a| a.nombre == "LibreOffice Calc") {
+            let q = normalizar(&"libreoffice-calc".replace(['-', '_'], " "));
+            assert!(indice().iter().any(|a| a.claves[0] == q));
+        }
     }
 
     #[test]

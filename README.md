@@ -18,6 +18,8 @@ target/release/iurevoz decir "hola" --voz piper-claude  # voz local
 - **Puntuación dictada**: «coma», «punto», «punto y coma», «dos puntos», «punto y aparte», «dos puntos y aparte», «nueva línea» (o «nuevo/otro renglón», «cambio de renglón», «salto de línea»), «nuevo párrafo», «abre/cierra interrogación», «abre/cierra exclamación», «abre/cierra paréntesis», «abre/cierra comillas», «puntos suspensivos», «viñeta» (salto de línea + «- », que Docs y Word convierten en lista), «viñeta numerada» (salto + «1. », «2. »…; el contador vuelve a 1 en cada párrafo). También se aceptan variantes que el ASR produce, como «punto y seguida» o «punto ya parte». «Punto» y «coma» después de un artículo, preposición u ordinal («el punto de vista», «en coma», «segundo punto») se dejan como palabra.
 - **Corrección con LLM** (Ajustes, apagada por omisión): Ollama local, OpenRouter u otro servidor OpenAI-compatible. La API key se toma de `OPENROUTER_API_KEY` o se guarda en `~/.config/iurevoz/config.toml` (permisos 600).
 - **Modo comando** (lista cerrada de herramientas, sin shell): botón «Comando», atajo global (se sugiere Ctrl+Alt+C), `iurevoz comando`, o empezar la frase con el prefijo hablado («computadora, abre la calculadora»; decir solo «computadora» deja escuchando la siguiente frase). Un LLM (Gemma 4 E2B local por omisión) elige entre: abrir aplicación, abrir URL, buscar en la web, abrir carpeta de la carpeta personal, calcular, atajos de teclado en la ventana activa, escribir texto, volumen, fecha y hora, leer la selección y leer una página web. Responde en voz alta.
+- **Claude Code (etapa 2)**: «computadora, Claude, revisa mis descargas…» (o «Claude, …» en modo comando) pasa la tarea a `claude -p` con la cuenta del usuario; el modelo local también puede delegar con la herramienta `pedir_a_claude`, previa confirmación. Claude puede leer y buscar sin preguntar; **cada acción que modifica algo** (comandos, escribir o editar archivos) pasa por `iurevoz mcp-permisos` (servidor MCP de `--permission-prompt-tool`), que la pregunta en voz y en la ventana: se responde «sí»/«no» hablando o con los botones. Sin respuesta en 100 s se niega. Desde fuera solo se puede negar (`iurevoz rechazar`).
+- **OpenRouter para comandos**: en Ajustes → Modo comando. Probados DeepSeek v4.1 Flash y Gemini 3.1 Flash Lite: 1–3 s por instrucción.
 - **Voz (TTS) local**: Piper (México y Argentina), Kokoro y Supertonic 3 vía sherpa-onnx; se elige en Ajustes. Botón «Leer» o atajo (Ctrl+Alt+L) lee el texto seleccionado; pulsarlo de nuevo calla. Mientras la app habla, el micrófono oye silencio para no transcribirse a sí misma.
 - Modelos en `~/.local/share/iurevoz/modelos`; también reutiliza los que bajó el benchmark en `~/.cache/stt-bench/models`.
 - `IUREVOZ_LOG=1` imprime lo que entrega el ASR, las frases, correcciones y estados en la terminal. `IUREVOZ_GRABAR=1` guarda el audio de cada dictado en `~/.local/share/iurevoz/depuracion/` (solo local).
@@ -39,6 +41,7 @@ cpal (16 kHz mono) ─▶ hilo control ─▶ hilo ASR ────────�
 | `portal` | RemoteDesktop (teclear y combinaciones de teclas) y GlobalShortcuts (dictar, comando, leer) con ashpd |
 | `agente` | modo comando: LLM con *tool calling* (Ollama u OpenAI-compatible), hasta 5 pasos |
 | `escritorio` | herramientas permitidas: apps (.desktop + gettext + sinónimos), URLs, carpetas, calculadora, teclas, volumen, lectura |
+| `claude` | etapa 2: lanza `claude -p` (stream-json) y sirve el MCP de permisos que pregunta a la app |
 | `voz` | TTS local con sherpa-onnx y reproducción con cpal, oración por oración e interrumpible |
 | `control` | micrófono y órdenes en un hilo propio: en Wayland la ventana no corre si está oculta |
 | `motor` | hilos de ASR (latencia crítica) y de salida (corrige e inyecta en orden) |
@@ -124,5 +127,5 @@ Lección: el texto dictado va delimitado y con la instrucción explícita de no 
 - [x] App en Rust con GUI: dictado → puntuación → corrección → teclear en la ventana activa
 - [x] Modo comando local con herramientas en lista blanca (sin shell)
 - [x] Voz local: respuestas habladas y lectura de selección o páginas
-- [ ] Etapa 2: OpenRouter para comandos y Claude Code (cuenta del usuario) para instrucciones que sí toquen el sistema, con confirmación
+- [x] Etapa 2: OpenRouter para comandos y Claude Code (cuenta del usuario) con permiso por acción
 - [ ] Cliente MCP de las apps del suite

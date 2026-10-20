@@ -4,6 +4,7 @@ mod agente;
 mod asr;
 mod atajos_gnome;
 mod audio;
+mod claude;
 mod config;
 mod control;
 mod correccion;
@@ -43,10 +44,19 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("-h" | "--help" | "ayuda") => print!("{AYUDA}"),
-        Some(o @ ("alternar" | "leer" | "callar")) if args.len() == 1 => {
+        Some(o @ ("alternar" | "leer" | "callar" | "rechazar")) if args.len() == 1 => {
             if !control::enviar_a_instancia(o) {
                 bail!("iurevoz no está abierto");
             }
+        }
+        Some("mcp-permisos") => claude::servidor_permisos()?,
+        Some("claude") => {
+            let tarea = args[1..].join(" ");
+            let r = claude::ejecutar(&tarea, |p| match p {
+                claude::Progreso::Texto(t) => println!("  … {t}"),
+                claude::Progreso::Herramienta(h) => println!("  · {h}"),
+            })?;
+            println!("{r}");
         }
         Some("instalar-atajos") => println!("{}", atajos_gnome::instalar()?),
         Some("comando") if args.len() == 1 => {
@@ -107,6 +117,7 @@ fn main() -> Result<()> {
             let ruta = args.get(1).context("falta el archivo .wav")?;
             transcribir(ruta, args.iter().any(|a| a == "--corregir"))?;
         }
+        Some(otro) if !otro.starts_with("--") => bail!("subcomando desconocido: {otro} (ver iurevoz --help)"),
         _ => {
             if control::enviar_a_instancia("alternar") {
                 // ya hay una ventana abierta: el segundo arranque funciona como atajo

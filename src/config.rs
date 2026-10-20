@@ -90,11 +90,13 @@ pub struct Comandos {
     pub prefijo: String,
     /// LLM que interpreta (mismos campos que la corrección).
     pub llm: Correccion,
+    /// Etapa 2: permitir delegar a Claude Code (cuenta del usuario), con confirmación.
+    pub claude: bool,
 }
 
 impl Default for Comandos {
     fn default() -> Self {
-        Self { activos: true, prefijo: "computadora".into(), llm: Correccion { activa: true, ..Correccion::default() } }
+        Self { activos: true, prefijo: "computadora".into(), llm: Correccion { activa: true, ..Correccion::default() }, claude: true }
     }
 }
 

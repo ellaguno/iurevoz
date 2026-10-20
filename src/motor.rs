@@ -67,6 +67,7 @@ impl Motor {
         let (tx_ev, eventos) = unbounded::<Evento>();
         let (tx_sal, rx_sal) = unbounded::<(usize, String, Config)>();
         let (tx_ag, rx_ag) = unbounded::<(usize, String, Config)>();
+        let control_ag = control.clone();
 
         let ev = Emisor { tx: tx_ev.clone(), notificar: notificar.clone() };
         let rutas = Rutas { salida: tx_sal, agente: tx_ag, estado, control };
@@ -85,7 +86,7 @@ impl Motor {
         let ev = Emisor { tx: tx_ev, notificar };
         std::thread::Builder::new()
             .name("agente".into())
-            .spawn(move || hilo_agente(rx_ag, portal, voz, ev))
+            .spawn(move || hilo_agente(rx_ag, portal, voz, control_ag, ev))
             .expect("hilo agente");
 
         Self { tx, eventos }
@@ -106,6 +107,31 @@ impl Emisor {
         let _ = self.tx.send(e);
         (self.notificar)();
     }
+}
+
+/// «Sí», «adelante», «permítelo» → true; «no», «cancela», «alto» → false; lo demás, None.
+fn si_o_no(frase: &str) -> Option<bool> {
+    let p = crate::correccion::palabras(frase);
+    let primera = p.first()?.as_str();
+    match primera {
+        "sí" | "si" | "claro" | "adelante" | "dale" | "ok" | "okay" | "va" | "hazlo" | "permitido" | "permítelo" | "permitelo" | "acepto" | "correcto" | "afirmativo" | "órale" => Some(true),
+        "no" | "cancela" | "cancelar" | "alto" | "detente" | "niega" | "nada" | "negativo" | "espera" => Some(false),
+        "permite" | "permitir" => Some(true),
+        _ => None,
+    }
+}
+
+/// «Claude, revisa…» (y variantes que oye el ASR): devuelve la tarea.
+fn para_claude(instruccion: &str) -> Option<String> {
+    let p = crate::correccion::palabras(instruccion);
+    let primera = p.first()?;
+    if !matches!(primera.as_str(), "claude" | "cloud" | "clod" | "clode" | "claud" | "clau" | "glod" | "klod") {
+        return None;
+    }
+    let resto = instruccion.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let resto = resto.trim_start_matches(char::is_alphanumeric);
+    let resto = resto.trim_start_matches(|c: char| !c.is_alphanumeric()).trim();
+    (!resto.is_empty()).then(|| resto.to_string())
 }
 
 /// A dónde va cada frase final.
@@ -157,6 +183,13 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                 Salida::Final(t) => {
                     if std::env::var_os("IUREVOZ_LOG").is_some() {
                         eprintln!("[iurevoz] asr: {t:?}");
+                    }
+                    // ¿respuesta a un permiso pendiente?
+                    if rutas.estado.pendiente.lock().unwrap().is_some() {
+                        if let Some(si) = si_o_no(&t) {
+                            let _ = rutas.control.send(Control::Responder(si));
+                        }
+                        continue; // mientras se espera el permiso nada se dicta
                     }
                     // ¿instrucción en vez de dictado?
                     let instruccion = if rutas.estado.modo_comando.swap(false, std::sync::atomic::Ordering::Relaxed) {
@@ -280,10 +313,34 @@ fn cargar(cfg: &Config, ev: &Emisor) -> Option<Reconocedor> {
     }
 }
 
-fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, voz: Option<Voz>, ev: Emisor) {
+fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, voz: Option<Voz>, control: Sender<Control>, ev: Emisor) {
     for (id, instruccion, cfg) in rx {
         let voz_resp = voz.clone().filter(|_| cfg.voz.responder);
-        let ag = Agente::new(cfg.comandos.llm.clone(), portal.clone(), voz.clone());
+        // «Claude, …»: directo a Claude Code, sin pasar por el modelo local
+        if cfg.comandos.claude {
+            if let Some(tarea) = para_claude(&instruccion) {
+                if let Some(v) = &voz_resp {
+                    v.decir("Se lo paso a Claude.");
+                }
+                lanzar_claude(id, tarea, voz_resp.clone(), ev.clone());
+                continue;
+            }
+        }
+        let mut ag = Agente::new(cfg.comandos.llm.clone(), portal.clone(), voz.clone());
+        if cfg.comandos.claude {
+            let (control, ev, v) = (control.clone(), ev.clone(), voz_resp.clone());
+            ag = ag.con_claude(Box::new(move |tarea: &str| {
+                // el modelo local decidió delegar: se confirma antes de mandar nada fuera
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let _ = control.send(Control::Permiso(format!("encargarse de: {tarea}"), tx));
+                if rx.recv_timeout(std::time::Duration::from_secs(110)).unwrap_or(false) {
+                    lanzar_claude(id, tarea.to_string(), v.clone(), ev.clone());
+                    Ok("le pasé la tarea a Claude; avisaré cuando termine".into())
+                } else {
+                    Ok("el usuario no quiso pasarle la tarea a Claude".into())
+                }
+            }));
+        }
         let r = ag.ejecutar(&instruccion, |accion| ev.enviar(Evento::Accion { id, texto: accion.to_string() }));
         match r {
             Ok(inf) => {
@@ -302,6 +359,38 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
             }
         }
     }
+}
+
+/// Corre la tarea con Claude Code en su propio hilo: puede tardar minutos.
+fn lanzar_claude(id: usize, tarea: String, voz: Option<Voz>, ev: Emisor) {
+    std::thread::Builder::new()
+        .name("claude".into())
+        .spawn(move || {
+            ev.enviar(Evento::Accion { id, texto: format!("Claude: {tarea}") });
+            let r = crate::claude::ejecutar(&tarea, |p| {
+                let texto = match p {
+                    crate::claude::Progreso::Texto(t) if !t.is_empty() => format!("Claude: {t}"),
+                    crate::claude::Progreso::Herramienta(h) => format!("Claude va a {h}"),
+                    _ => return,
+                };
+                ev.enviar(Evento::Accion { id, texto });
+            });
+            match r {
+                Ok(resp) => {
+                    if let Some(v) = &voz {
+                        v.decir(resp.clone());
+                    }
+                    ev.enviar(Evento::Respuesta { id, texto: resp });
+                }
+                Err(e) => {
+                    if let Some(v) = &voz {
+                        v.decir("Claude no pudo terminar la tarea.");
+                    }
+                    ev.enviar(Evento::ErrorComando { id, msg: format!("{e:#}") });
+                }
+            }
+        })
+        .expect("hilo claude");
 }
 
 fn hilo_salida(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, ev: Emisor) {
@@ -349,6 +438,17 @@ fn hilo_salida(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, ev
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn respuestas_y_claude() {
+        assert_eq!(si_o_no("Sí, adelante"), Some(true));
+        assert_eq!(si_o_no("No."), Some(false));
+        assert_eq!(si_o_no("Permite"), Some(true));
+        assert_eq!(si_o_no("el clima de hoy"), None);
+        assert_eq!(para_claude("Claude, revisa mis descargas").as_deref(), Some("revisa mis descargas"));
+        assert_eq!(para_claude("Cloud busca los PDF del expediente").as_deref(), Some("busca los PDF del expediente"));
+        assert_eq!(para_claude("abre la calculadora"), None);
+    }
 
     #[test]
     fn prefijo() {

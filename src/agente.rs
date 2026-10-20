@@ -27,13 +27,13 @@ No uses markdown ni listas. Fecha y hora actuales: {}.",
     )
 }
 
-fn herramientas() -> Value {
+fn herramientas(con_claude: bool) -> Value {
     let f = |nombre: &str, desc: &str, props: Value, req: &[&str]| {
         json!({"type": "function", "function": {"name": nombre, "description": desc,
             "parameters": {"type": "object", "properties": props, "required": req}}})
     };
     let s = |d: &str| json!({"type": "string", "description": d});
-    json!([
+    let mut v = json!([
         f("abrir_aplicacion", "Abre una aplicación instalada por su nombre (p. ej. calculadora, Firefox, Archivos, terminal).", json!({"nombre": s("nombre de la aplicación")}), &["nombre"]),
         f("abrir_url", "Abre una dirección web en el navegador.", json!({"url": s("URL o dominio")}), &["url"]),
         f("buscar_web", "Busca algo en internet y abre los resultados en el navegador.", json!({"consulta": s("qué buscar")}), &["consulta"]),
@@ -45,14 +45,27 @@ fn herramientas() -> Value {
         f("hora_fecha", "Da la fecha y hora actuales.", json!({}), &[]),
         f("leer_seleccion", "Lee en voz alta el texto seleccionado (o el del portapapeles).", json!({}), &[]),
         f("leer_pagina", "Descarga una página web y lee en voz alta su texto principal.", json!({"url": s("URL de la página")}), &["url"]),
-    ])
+    ]);
+    if con_claude {
+        v.as_array_mut().unwrap().push(f(
+            "pedir_a_claude",
+            "Pasa la tarea a Claude, un asistente con acceso completo a la computadora, para lo que las demás herramientas no pueden: manejar o buscar archivos, instalar o configurar programas, ejecutar comandos, preguntas complejas. El usuario confirma antes.",
+            json!({"tarea": s("la tarea completa, en español")}),
+            &["tarea"],
+        ));
+    }
+    v
 }
+
+/// Pide confirmación y, si se concede, lanza la tarea con Claude. Devuelve qué pasó.
+pub type Delegar = Box<dyn Fn(&str) -> Result<String> + Send + Sync>;
 
 pub struct Agente {
     cfg: LlmCfg,
     agente: ureq::Agent,
     portal: Option<Portal>,
     voz: Option<Voz>,
+    delegar: Option<Delegar>,
 }
 
 /// Lo que pasó al ejecutar una instrucción.
@@ -65,7 +78,12 @@ pub struct Informe {
 impl Agente {
     pub fn new(cfg: LlmCfg, portal: Option<Portal>, voz: Option<Voz>) -> Self {
         let agente = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(120))).build().into();
-        Self { cfg, agente, portal, voz }
+        Self { cfg, agente, portal, voz, delegar: None }
+    }
+
+    pub fn con_claude(mut self, delegar: Delegar) -> Self {
+        self.delegar = Some(delegar);
+        self
     }
 
     pub fn ejecutar(&self, instruccion: &str, mut paso: impl FnMut(&str)) -> Result<Informe> {
@@ -76,7 +94,7 @@ impl Agente {
             let (msg, mut llamadas) = self.llamar(&mensajes)?;
             if llamadas.is_empty() {
                 // modelos chicos a veces escriben la llamada como texto en vez de estructurarla
-                llamadas = llamadas_en_texto(msg["content"].as_str().unwrap_or(""));
+                llamadas = llamadas_en_texto(msg["content"].as_str().unwrap_or(""), self.delegar.is_some());
             }
             if llamadas.is_empty() {
                 inf.respuesta = msg["content"].as_str().unwrap_or("").trim().to_string();
@@ -136,6 +154,7 @@ impl Agente {
                 self.voz.as_ref().context("la voz está desactivada")?.decir(t.clone());
                 Ok(format!("leyendo {} palabras en voz alta", t.split_whitespace().count()))
             }
+            "pedir_a_claude" => self.delegar.as_ref().context("Claude no está habilitado")?(&s("tarea")?),
             "leer_pagina" => {
                 let t = esc::texto_de_pagina(&s("url")?)?;
                 self.voz.as_ref().context("la voz está desactivada")?.decir(t.clone());
@@ -152,11 +171,11 @@ impl Agente {
             Servicio::Ollama => (
                 format!("{base}/api/chat"),
                 json!({"model": self.cfg.modelo, "stream": false, "think": false, "keep_alive": "30m",
-                    "options": {"temperature": 0, "num_ctx": 4096}, "messages": mensajes, "tools": herramientas()}),
+                    "options": {"temperature": 0, "num_ctx": 4096}, "messages": mensajes, "tools": herramientas(self.delegar.is_some())}),
                 None,
             ),
             Servicio::OpenRouter | Servicio::OpenAi => {
-                let mut c = json!({"model": self.cfg.modelo, "temperature": 0, "messages": mensajes, "tools": herramientas()});
+                let mut c = json!({"model": self.cfg.modelo, "temperature": 0, "messages": mensajes, "tools": herramientas(self.delegar.is_some())});
                 if self.cfg.servicio == Servicio::OpenRouter {
                     c["reasoning"] = json!({"enabled": false});
                 }
@@ -195,8 +214,8 @@ impl Agente {
 
 /// Reconoce llamadas escritas como texto, p. ej. el formato nativo de Gemma:
 /// `abrir_aplicacion{nombre:<|"|>Excel<|"|>}` o `calcular{expresion:"2+2"}`.
-fn llamadas_en_texto(texto: &str) -> Vec<(String, String, Value)> {
-    let nombres: Vec<String> = herramientas()
+fn llamadas_en_texto(texto: &str, con_claude: bool) -> Vec<(String, String, Value)> {
+    let nombres: Vec<String> = herramientas(con_claude)
         .as_array()
         .map(|v| v.iter().filter_map(|h| h["function"]["name"].as_str().map(str::to_string)).collect())
         .unwrap_or_default();
@@ -236,12 +255,12 @@ mod pruebas {
 
     #[test]
     fn llamada_escrita_como_texto() {
-        let v = llamadas_en_texto("abrir_aplicacion{nombre:<|\"|>Excel<|\"|>}");
+        let v = llamadas_en_texto("abrir_aplicacion{nombre:<|\"|>Excel<|\"|>}", false);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].1, "abrir_aplicacion");
         assert_eq!(v[0].2["nombre"], "Excel");
-        let v = llamadas_en_texto("volumen{accion:\"subir\",cantidad:20}");
+        let v = llamadas_en_texto("volumen{accion:\"subir\",cantidad:20}", false);
         assert_eq!(v[0].2["cantidad"], 20);
-        assert!(llamadas_en_texto("Listo, ya abrí la calculadora.").is_empty());
+        assert!(llamadas_en_texto("Listo, ya abrí la calculadora.", false).is_empty());
     }
 }

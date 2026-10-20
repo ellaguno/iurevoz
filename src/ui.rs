@@ -355,6 +355,11 @@ impl App {
                 cambio |= ui.add(egui::TextEdit::singleline(&mut self.cfg.comandos.prefijo).hint_text("computadora")).lost_focus();
                 ui.end_row();
                 cambio |= ajustes_llm(ui, "cmd", &mut self.cfg.comandos.llm);
+                ui.label("Claude Code");
+                cambio |= ui
+                    .checkbox(&mut self.cfg.comandos.claude, "delegar tareas del sistema («Claude, …»), con permiso por acción")
+                    .changed();
+                ui.end_row();
             }
 
             ui.label(RichText::new("Voz").strong());
@@ -399,6 +404,9 @@ impl App {
         self.panel_prueba(ui);
         if self.cfg.correccion.activa && self.cfg.correccion.servicio == Servicio::OpenRouter {
             ui.label(RichText::new("Con OpenRouter cada frase dictada sale de esta computadora.").small().color(Color32::from_rgb(200, 150, 0)));
+        }
+        if self.cfg.comandos.activos && self.cfg.comandos.claude {
+            ui.label(RichText::new("Con Claude Code la tarea y lo que Claude lea salen a los servidores de Anthropic, con tu cuenta.").small().color(Color32::from_rgb(200, 150, 0)));
         }
         if self.cfg.comandos.activos && self.cfg.comandos.llm.servicio == Servicio::OpenRouter {
             ui.label(RichText::new("Con OpenRouter cada instrucción sale de esta computadora.").small().color(Color32::from_rgb(200, 150, 0)));
@@ -456,6 +464,27 @@ fn ajustes_llm(ui: &mut egui::Ui, id: &str, c: &mut Correccion) -> bool {
 }
 
 impl App {
+    /// Permiso pendiente de Claude: también se responde diciendo «sí» o «no».
+    fn permiso(&mut self, ui: &mut egui::Ui) {
+        let desc = self.ctl.estado.pendiente.lock().unwrap().as_ref().map(|(_, d, _)| d.clone());
+        let Some(desc) = desc else { return };
+        egui::Frame::group(ui.style()).fill(Color32::from_rgba_unmultiplied(200, 150, 0, 30)).show(ui, |ui| {
+            ui.label(RichText::new("Claude pide permiso").strong());
+            ui.label(RichText::new(&desc).size(15.0));
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new("✔ Permitir").size(15.0)).clicked() {
+                    self.ctl.enviar(Control::Responder(true));
+                }
+                if ui.button(RichText::new("✖ Rechazar").size(15.0)).clicked() {
+                    self.ctl.enviar(Control::Responder(false));
+                }
+                ui.label(RichText::new("o di «sí» / «no»").small().weak());
+            });
+        });
+        ui.add_space(6.0);
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+    }
+
     /// Teclea un texto conocido en un campo de esta ventana y compara lo que llegó.
     fn panel_prueba(&mut self, ui: &mut egui::Ui) {
         let Some(portal) = self.portal.clone() else { return };
@@ -530,6 +559,7 @@ impl eframe::App for App {
         });
         egui::CentralPanel::default().show(ui, |ui| {
             self.faltantes(ui);
+            self.permiso(ui);
             self.transcripcion(ui);
         });
         if self.grabando() || self.voz.as_ref().is_some_and(|v| v.hablando.load(Ordering::Relaxed)) {
