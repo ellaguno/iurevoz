@@ -451,12 +451,23 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
     }
 }
 
+/// Notificación de escritorio: llega aunque la ventana esté oculta.
+fn notificar(titulo: &str, cuerpo: &str) {
+    let cuerpo: String = cuerpo.chars().take(300).collect();
+    let _ = std::process::Command::new("notify-send")
+        .args(["--app-name=IureVoz", "--icon=audio-input-microphone", titulo, &cuerpo])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 /// Corre la tarea con Claude Code en su propio hilo: puede tardar minutos.
 fn lanzar_claude(id: usize, tarea: String, voz: Option<Voz>, ev: Emisor) {
     std::thread::Builder::new()
         .name("claude".into())
         .spawn(move || {
             ev.enviar(Evento::Accion { id, texto: format!("Claude: {tarea}") });
+            notificar("Claude está trabajando", &tarea);
             let r = crate::claude::ejecutar(&tarea, |p| {
                 let texto = match p {
                     crate::claude::Progreso::Texto(t) if !t.is_empty() => format!("Claude: {t}"),
@@ -467,12 +478,14 @@ fn lanzar_claude(id: usize, tarea: String, voz: Option<Voz>, ev: Emisor) {
             });
             match r {
                 Ok(resp) => {
+                    notificar("Claude terminó", &crate::voz::para_voz(&resp));
                     if let Some(v) = &voz {
                         v.decir(resp.clone());
                     }
                     ev.enviar(Evento::Respuesta { id, texto: resp });
                 }
                 Err(e) => {
+                    notificar("Claude no terminó la tarea", &format!("{e:#}"));
                     if let Some(v) = &voz {
                         v.decir("Claude no pudo terminar la tarea.");
                     }
