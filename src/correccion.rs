@@ -69,7 +69,13 @@ impl Corrector {
         let mensajes = json!([{"role": "system", "content": sistema}, {"role": "user", "content": usuario}]);
         // la corrección mide lo mismo que la entrada: el tope corta modelos que divagan
         let tope = 2 * largo / 3 + 64;
-        let base = self.cfg.url.trim_end_matches('/');
+        let local;
+        let base = if self.cfg.servicio == Servicio::Local {
+            local = crate::llm_local::url(&self.cfg.modelo)?;
+            local.as_str()
+        } else {
+            self.cfg.url.trim_end_matches('/')
+        };
         match self.cfg.servicio {
             Servicio::Ollama => {
                 let cuerpo = json!({
@@ -80,7 +86,7 @@ impl Corrector {
                 let r: Value = self.post(&format!("{base}/api/chat"), &cuerpo, None)?;
                 texto(&r["message"]["content"])
             }
-            Servicio::OpenRouter | Servicio::OpenAi => {
+            Servicio::OpenRouter | Servicio::OpenAi | Servicio::Local => {
                 let mut cuerpo = json!({
                     "model": self.cfg.modelo, "temperature": 0, "max_tokens": tope, "messages": mensajes,
                 });

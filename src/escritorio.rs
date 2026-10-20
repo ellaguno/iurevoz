@@ -242,7 +242,18 @@ pub fn abrir_carpeta(nombre: &str) -> Result<String> {
 
 /// Evalúa aritmética. Los enteros se tratan como decimales para que 7/2 sea 3.5.
 pub fn calcular(expresion: &str) -> Result<String> {
-    let e = expresion
+    // «23%» es porcentaje (23/100); «7 % 2» sigue siendo módulo
+    let mut e1 = String::new();
+    let cs: Vec<char> = expresion.chars().collect();
+    for (i, &c) in cs.iter().enumerate() {
+        let siguiente = cs[i + 1..].iter().find(|x| !x.is_whitespace());
+        if c == '%' && !siguiente.is_some_and(|x| x.is_ascii_digit() || *x == '(') {
+            e1.push_str("/100");
+        } else {
+            e1.push(c);
+        }
+    }
+    let e = e1
         .replace('×', "*")
         .replace('÷', "/")
         .replace("raiz(", "math::sqrt(")
@@ -475,6 +486,9 @@ mod pruebas {
         assert_eq!(calcular("2^10").unwrap(), "1024");
         assert_eq!(calcular("sqrt(16)").unwrap(), "4");
         assert_eq!(calcular("1500 * 0,16").unwrap(), "240");
+        assert_eq!(calcular("23%").unwrap(), "0.23");
+        assert_eq!(calcular("1585 * 23%").unwrap(), "364.55");
+        assert_eq!(calcular("7 % 2").unwrap(), "1");
     }
 
     #[test]

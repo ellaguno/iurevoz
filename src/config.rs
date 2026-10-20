@@ -27,6 +27,8 @@ pub enum Inyeccion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Servicio {
+    /// llama-server administrado por la app (local, sin instalar nada).
+    Local,
     /// API nativa de Ollama (local).
     Ollama,
     /// OpenRouter (nube): el texto sale de la máquina.
@@ -56,9 +58,9 @@ impl Default for Correccion {
     fn default() -> Self {
         Self {
             activa: false,
-            servicio: Servicio::Ollama,
-            url: "http://localhost:11434".into(),
-            modelo: "gemma4:e2b".into(),
+            servicio: Servicio::Local,
+            url: String::new(),
+            modelo: "gemma4-e2b".into(),
             variable_clave: "OPENROUTER_API_KEY".into(),
             clave: None,
             glosario: vec![],
@@ -74,6 +76,7 @@ impl Correccion {
 
     pub fn url_por_omision(servicio: Servicio) -> &'static str {
         match servicio {
+            Servicio::Local => "",
             Servicio::Ollama => "http://localhost:11434",
             Servicio::OpenRouter => "https://openrouter.ai/api/v1",
             Servicio::OpenAi => "http://localhost:8080/v1",

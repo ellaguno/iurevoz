@@ -11,6 +11,7 @@ mod correccion;
 mod detector;
 mod entrenamiento;
 mod escritorio;
+mod llm_local;
 mod modelos;
 mod motor;
 mod portal;
@@ -40,6 +41,7 @@ Uso:
   iurevoz leer | callar         lee la selección en voz alta en la instancia abierta
   iurevoz entrenar-palabra [frase]  entrena el detector dedicado de la palabra clave
   iurevoz vigilia A.wav         simula «siempre escuchando» con un archivo
+  iurevoz preparar-llm [modelo] descarga llama.cpp y el modelo local (gemma4-e2b, qwen3.5-4b, qwen3.5-2b)
   iurevoz decir \"texto\" [--voz CLAVE] [--guardar A.wav]
                                 habla con la voz local (claves: piper-ald, piper-claude,
                                 piper-daniela, kokoro-dora, kokoro-alex, supertonic)
@@ -64,6 +66,15 @@ fn main() -> Result<()> {
             })?;
             println!("{r}");
         }
+        Some("preparar-llm") => {
+            let clave = args.get(1).cloned().unwrap_or_else(|| "gemma4-e2b".into());
+            llm_local::preparar(&clave, &|q, f| eprint!("\r{q} {:.0}%   ", f * 100.0))?;
+            eprintln!();
+            let t = Instant::now();
+            let url = llm_local::url(&clave)?;
+            println!("llama-server listo en {:.1} s: {url}", t.elapsed().as_secs_f32());
+            llm_local::apagar();
+        }
         Some("instalar-atajos") => println!("{}", atajos_gnome::instalar()?),
         Some("comando") if args.len() == 1 => {
             if !control::enviar_a_instancia("comando") {
@@ -82,8 +93,13 @@ fn main() -> Result<()> {
                     let _ = c.guardar();
                 }
             });
-            let t = Instant::now();
             let ag = agente::Agente::new(cfg.comandos.llm.clone(), Some(portal), voz.clone());
+            let t = Instant::now();
+            ag.precalentar()?;
+            if cfg.comandos.llm.servicio == config::Servicio::Local {
+                println!("(LLM local precalentado en {:.1} s)", t.elapsed().as_secs_f32());
+            }
+            let t = Instant::now();
             // «a ;; b»: varias instrucciones seguidas, con memoria, para probar la continuidad
             let mut historial = Vec::new();
             let mut inf = agente::Informe::default();
@@ -156,7 +172,9 @@ fn main() -> Result<()> {
             }
             instalar_lanzador();
             let sin_portal = args.iter().any(|a| a == "--sin-portal");
-            ui::ejecutar(Config::cargar(), sin_portal).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let r = ui::ejecutar(Config::cargar(), sin_portal);
+            llm_local::apagar();
+            r.map_err(|e| anyhow::anyhow!("{e}"))?;
         }
     }
     Ok(())

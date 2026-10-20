@@ -24,8 +24,9 @@ Para cualquier cuenta usa la herramienta calcular, nunca calcules de memoria. \
 Cuando termines responde en español, en una o dos frases cortas, porque tu respuesta se lee en voz alta. \
 No uses markdown ni listas. Si la instrucción completa o responde a algo de los mensajes anteriores \
 (p. ej. solo un número tras preguntar «¿de qué cantidad?»), úsala junto con ese contexto. \
-Fecha y hora actuales: {}.",
-        esc::hora_fecha()
+Hoy es {} (para la hora exacta usa hora_fecha).",
+        // solo la fecha: con la hora el prefijo cambiaría cada minuto y no serviría la caché
+        esc::hora_fecha().rsplit_once(',').map_or_else(|| esc::hora_fecha(), |(f, _)| f.to_string())
     )
 }
 
@@ -88,10 +89,26 @@ impl Agente {
         self
     }
 
+    /// Con el LLM local: arranca el servidor y deja en caché el prefijo (instrucciones y
+    /// herramientas), para que la primera instrucción real no espere a procesarlo.
+    pub fn precalentar(&self) -> Result<()> {
+        if self.cfg.servicio != Servicio::Local {
+            return Ok(());
+        }
+        let base = crate::llm_local::url(&self.cfg.modelo)?;
+        let mensajes = json!([{"role": "system", "content": sistema()}, {"role": "user", "content": "hola"}]);
+        let cuerpo = json!({"model": self.cfg.modelo, "temperature": 0, "max_tokens": 1, "messages": mensajes,
+            "tools": herramientas(self.delegar.is_some()), "chat_template_kwargs": {"enable_thinking": false}});
+        self.agente.post(&format!("{base}/chat/completions")).send_json(&cuerpo)?;
+        Ok(())
+    }
+
     /// `historial`: turnos recientes (usuario/asistente) para dar continuidad a la conversación.
     pub fn ejecutar(&self, instruccion: &str, historial: &[Value], mut paso: impl FnMut(&str)) -> Result<Informe> {
         let mut inf = Informe::default();
         let mut ultimo = String::new();
+        // misma herramienta con los mismos datos: no se repite (modelos chicos a veces insisten)
+        let mut hechas: Vec<(String, Value, String)> = Vec::new();
         let mut mensajes = vec![json!({"role": "system", "content": sistema()})];
         mensajes.extend(historial.iter().cloned());
         mensajes.push(json!({"role": "user", "content": instruccion}));
@@ -111,10 +128,17 @@ impl Agente {
             }
             mensajes.push(msg.clone());
             for (id, nombre, args) in llamadas {
-                let res = self.herramienta(&nombre, &args);
-                let texto = match &res {
-                    Ok(t) => t.clone(),
-                    Err(e) => format!("error: {e:#}"),
+                let previa = hechas.iter().find(|(n, a, _)| *n == nombre && *a == args).map(|(_, _, r)| r.clone());
+                let texto = match previa {
+                    Some(r) => format!("ya hecho antes en esta instrucción ({r}); no lo repitas y responde"),
+                    None => {
+                        let t = match self.herramienta(&nombre, &args) {
+                            Ok(t) => t,
+                            Err(e) => format!("error: {e:#}"),
+                        };
+                        hechas.push((nombre.clone(), args.clone(), t.clone()));
+                        t
+                    }
                 };
                 ultimo = texto.clone();
                 let accion = format!("{nombre}({}) → {texto}", args_cortos(&args));
@@ -171,7 +195,13 @@ impl Agente {
 
     /// Devuelve el mensaje del asistente y sus llamadas: (id, nombre, argumentos).
     fn llamar(&self, mensajes: &[Value]) -> Result<(Value, Vec<(String, String, Value)>)> {
-        let base = self.cfg.url.trim_end_matches('/');
+        let local;
+        let base = if self.cfg.servicio == Servicio::Local {
+            local = crate::llm_local::url(&self.cfg.modelo)?;
+            local.as_str()
+        } else {
+            self.cfg.url.trim_end_matches('/')
+        };
         let (url, cuerpo, clave) = match self.cfg.servicio {
             Servicio::Ollama => (
                 format!("{base}/api/chat"),
@@ -179,10 +209,13 @@ impl Agente {
                     "options": {"temperature": 0, "num_ctx": 4096}, "messages": mensajes, "tools": herramientas(self.delegar.is_some())}),
                 None,
             ),
-            Servicio::OpenRouter | Servicio::OpenAi => {
+            Servicio::OpenRouter | Servicio::OpenAi | Servicio::Local => {
                 let mut c = json!({"model": self.cfg.modelo, "temperature": 0, "messages": mensajes, "tools": herramientas(self.delegar.is_some())});
                 if self.cfg.servicio == Servicio::OpenRouter {
                     c["reasoning"] = json!({"enabled": false});
+                } else {
+                    // llama-server: sin modo de razonamiento (si no, lo escribe como respuesta)
+                    c["chat_template_kwargs"] = json!({"enable_thinking": false});
                 }
                 let clave = self.cfg.clave_efectiva();
                 if self.cfg.servicio == Servicio::OpenRouter && clave.is_none() {
@@ -218,13 +251,62 @@ impl Agente {
 }
 
 /// Reconoce llamadas escritas como texto, p. ej. el formato nativo de Gemma:
-/// `abrir_aplicacion{nombre:<|"|>Excel<|"|>}` o `calcular{expresion:"2+2"}`.
+/// `abrir_aplicacion{nombre:<|"|>Excel<|"|>}`, `calcular{expresion:"2+2"}` o al estilo
+/// función: `calcular(1585 * 0.23)`, `abrir_url(url="…")`, `hora_fecha()`.
 fn llamadas_en_texto(texto: &str, con_claude: bool) -> Vec<(String, String, Value)> {
-    let nombres: Vec<String> = herramientas(con_claude)
+    let defs = herramientas(con_claude);
+    let nombres: Vec<String> = defs
         .as_array()
         .map(|v| v.iter().filter_map(|h| h["function"]["name"].as_str().map(str::to_string)).collect())
         .unwrap_or_default();
+    // primer parámetro (para llamadas con un solo argumento sin nombre)
+    let primero = |n: &str| -> Option<String> {
+        defs.as_array()?.iter().find(|h| h["function"]["name"] == n).and_then(|h| {
+            let f = &h["function"]["parameters"];
+            f["required"].get(0).or_else(|| f["properties"].as_object()?.keys().next().map(|_| &f["required"][0]))?.as_str().map(str::to_string)
+        })
+    };
     let mut out = Vec::new();
+    for n in &nombres {
+        let mut resto = texto;
+        while let Some(i) = resto.find(&format!("{n}(")) {
+            // que no sea parte de otra palabra
+            if i > 0 && resto[..i].chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                resto = &resto[i + n.len()..];
+                continue;
+            }
+            let ini = i + n.len() + 1;
+            // paréntesis balanceados (la expresión puede llevarlos)
+            let mut nivel = 1;
+            let mut fin = None;
+            for (k, c) in resto[ini..].char_indices() {
+                match c {
+                    '(' => nivel += 1,
+                    ')' => {
+                        nivel -= 1;
+                        if nivel == 0 {
+                            fin = Some(ini + k);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(fin) = fin else { break };
+            let cuerpo = resto[ini..fin].trim();
+            let mut args = serde_json::Map::new();
+            let con_nombre = cuerpo.split_once(['=', ':']).filter(|(k, _)| k.trim().chars().all(|c| c.is_alphanumeric() || c == '_') && !k.trim().is_empty());
+            if let Some((k, v)) = con_nombre {
+                args.insert(k.trim().to_string(), Value::from(v.trim().trim_matches(['"', '\''])));
+            } else if !cuerpo.is_empty() {
+                if let Some(p) = primero(n) {
+                    args.insert(p, Value::from(cuerpo.trim_matches(['"', '\''])));
+                }
+            }
+            out.push((String::new(), n.clone(), Value::Object(args)));
+            resto = &resto[fin..];
+        }
+    }
     for n in nombres {
         let mut resto = texto;
         while let Some(i) = resto.find(&format!("{n}{{")) {
@@ -267,5 +349,11 @@ mod pruebas {
         let v = llamadas_en_texto("volumen{accion:\"subir\",cantidad:20}", false);
         assert_eq!(v[0].2["cantidad"], 20);
         assert!(llamadas_en_texto("Listo, ya abrí la calculadora.", false).is_empty());
+        let v = llamadas_en_texto("calcular(1585 * (0.23))", false);
+        assert_eq!((v[0].1.as_str(), v[0].2["expresion"].as_str()), ("calcular", Some("1585 * (0.23)")));
+        let v = llamadas_en_texto("hora_fecha()", false);
+        assert_eq!(v[0].1, "hora_fecha");
+        let v = llamadas_en_texto("abrir_url(url=\"es.wikipedia.org\")", false);
+        assert_eq!(v[0].2["url"], "es.wikipedia.org");
     }
 }

@@ -514,11 +514,13 @@ fn ajustes_llm(ui: &mut egui::Ui, id: &str, c: &mut Correccion) -> bool {
     let antes = c.servicio;
     egui::ComboBox::from_id_salt(format!("servicio-{id}"))
         .selected_text(match antes {
+            Servicio::Local => "Local (integrado)",
             Servicio::Ollama => "Ollama (local)",
             Servicio::OpenRouter => "OpenRouter (nube)",
             Servicio::OpenAi => "OpenAI-compatible (llama-server…)",
         })
         .show_ui(ui, |ui| {
+            ui.selectable_value(&mut c.servicio, Servicio::Local, "Local (integrado)");
             ui.selectable_value(&mut c.servicio, Servicio::Ollama, "Ollama (local)");
             ui.selectable_value(&mut c.servicio, Servicio::OpenRouter, "OpenRouter (nube)");
             ui.selectable_value(&mut c.servicio, Servicio::OpenAi, "OpenAI-compatible (llama-server…)");
@@ -526,6 +528,7 @@ fn ajustes_llm(ui: &mut egui::Ui, id: &str, c: &mut Correccion) -> bool {
     if c.servicio != antes {
         c.url = Correccion::url_por_omision(c.servicio).into();
         c.modelo = match c.servicio {
+            Servicio::Local => "gemma4-e2b",
             Servicio::Ollama => "gemma4:e2b",
             Servicio::OpenRouter => "deepseek/deepseek-v4.1-flash",
             Servicio::OpenAi => "local",
@@ -534,6 +537,36 @@ fn ajustes_llm(ui: &mut egui::Ui, id: &str, c: &mut Correccion) -> bool {
         cambio = true;
     }
     ui.end_row();
+    if c.servicio == Servicio::Local {
+        use crate::llm_local::MODELOS;
+        ui.label("Modelo");
+        let actual = MODELOS.iter().find(|m| m.0 == c.modelo).map_or(c.modelo.as_str(), |m| m.3).to_string();
+        egui::ComboBox::from_id_salt(format!("local-{id}")).selected_text(actual).show_ui(ui, |ui| {
+            for (clave, _, _, desc) in MODELOS {
+                cambio |= ui.selectable_value(&mut c.modelo, clave.to_string(), *desc).changed();
+            }
+        });
+        ui.end_row();
+        ui.label("");
+        ui.horizontal(|ui| match crate::llm_local::preparando() {
+            Some((que, f)) => {
+                ui.add(egui::ProgressBar::new(f).text(format!("{que} {:.0}%", f * 100.0)).desired_width(220.0));
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+            }
+            None => match crate::llm_local::estado(&c.modelo) {
+                (true, true) => drop(ui.label(RichText::new("listo · se arranca solo al usarlo").small().color(Color32::from_rgb(60, 160, 60)))),
+                _ => {
+                    if ui.button("Descargar").on_hover_text("llama.cpp (35 MB) y el modelo, una sola vez").clicked() {
+                        let ctx = ui.ctx().clone();
+                        crate::llm_local::preparar_en_fondo(c.modelo.clone(), move || ctx.request_repaint());
+                    }
+                    ui.label(RichText::new("falta descargar").small().weak());
+                }
+            },
+        });
+        ui.end_row();
+        return cambio;
+    }
     ui.label("Modelo");
     cambio |= ui.text_edit_singleline(&mut c.modelo).lost_focus();
     ui.end_row();
@@ -734,6 +767,20 @@ pub fn ejecutar(cfg: Config, sin_portal: bool) -> eframe::Result {
             crate::control::escuchar_socket(ctl.clone());
             if cfg.escucha.siempre {
                 ctl.enviar(Control::Vigilia(true));
+            }
+            // LLM local: se arranca y precalienta en segundo plano para que la primera instrucción sea rápida
+            if cfg.comandos.activos && cfg.comandos.llm.servicio == Servicio::Local {
+                let c = cfg.clone();
+                std::thread::spawn(move || {
+                    let mut ag = crate::agente::Agente::new(c.comandos.llm.clone(), None, None);
+                    if c.comandos.claude {
+                        // mismas herramientas que en uso real, para que el prefijo en caché coincida
+                        ag = ag.con_claude(Box::new(|_| Ok(String::new())));
+                    }
+                    if let Err(e) = ag.precalentar() {
+                        eprintln!("precalentar LLM local: {e:#}");
+                    }
+                });
             }
             Ok(Box::new(App::new(cfg, motor, ctl, rx_ui, portal, voz)))
         }),
