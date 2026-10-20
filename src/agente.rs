@@ -1,6 +1,7 @@
 //! Modo comando: un LLM interpreta la instrucción hablada y llama herramientas de una
 //! lista cerrada (`escritorio`). Nunca hay shell ni comandos arbitrarios.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -18,6 +19,9 @@ fn sistema() -> String {
         "Eres IureVoz, un asistente que controla el escritorio Linux (GNOME) de quien te habla. \
 La instrucción viene de un reconocedor de voz y puede tener errores: interpreta la intención. \
 Usa SOLO las herramientas disponibles; si algo no se puede hacer con ellas, dilo. \
+Si la instrucción menciona archivos, documentos, expedientes, clientes, carpetas, PDF, escritos, grabaciones, \
+juntas, transcripciones o el editor, usa expedientes_y_apps (son archivos de este equipo, nunca de internet). \
+Nunca inventes URLs, cifras ni resultados: solo cuenta lo que devolvió una herramienta. \
 Si la instrucción suena a abrir algo (aunque esté mal escrita, p. ej. «apre» o «habre»), usa abrir_aplicacion. \
 Nunca digas que hiciste o harás algo sin haber llamado la herramienta correspondiente. \
 Para cualquier cuenta usa la herramienta calcular, nunca calcules de memoria. \
@@ -30,6 +34,49 @@ Hoy es {} (para la hora exacta usa hora_fecha).",
         // solo la fecha: con la hora el prefijo cambiaría cada minuto y no serviría la caché
         esc::hora_fecha().rsplit_once(',').map_or_else(|| esc::hora_fecha(), |(f, _)| f.to_string())
     )
+}
+
+fn sistema_suite() -> String {
+    "Eres el ayudante de IureVoz para las apps de escritorio de la suite Iurefficient: IureDav (unidad de \
+archivos de los expedientes), IureOCR (PDF), IureTranscribe (grabar y transcribir reuniones) e IureEditor \
+(documentos). Resuelve el pedido con las herramientas; para encontrar un archivo usa primero archivos \
+(listar o buscar) y luego usa la ruta exacta que devuelva. Si te piden el contenido o un resumen, lee el \
+archivo y resume tú en dos o tres frases. Nunca inventes rutas ni resultados. Responde en español, breve, \
+sin markdown, porque se lee en voz alta."
+        .to_string()
+}
+
+/// Herramientas del sub-agente de la suite.
+fn herramientas_suite() -> Value {
+    let f = |nombre: &str, desc: &str, props: Value, req: &[&str]| {
+        json!({"type": "function", "function": {"name": nombre, "description": desc,
+            "parameters": {"type": "object", "properties": props, "required": req}}})
+    };
+    let s = |d: &str| json!({"type": "string", "description": d});
+    let n = |d: &str| json!({"type": "integer", "description": d});
+    json!([
+        f("archivos", "Lista una carpeta de la unidad de IureDav (expedientes) o busca archivos por nombre.", json!({"carpeta": s("carpeta relativa a la unidad; vacío = raíz"), "buscar": s("palabras del nombre del archivo")}), &[]),
+        f("abrir_archivo", "Abre un archivo con su programa, o en IureEditor si con_editor es true.", json!({"ruta": s("ruta devuelta por archivos o ruta en la carpeta personal"), "con_editor": {"type": "boolean"}}), &["ruta"]),
+        f("nuevo_documento", "Abre IureEditor para escribir un documento nuevo (luego el usuario dicta).", json!({}), &[]),
+        f("leer_archivo", "Devuelve el texto de un archivo (PDF, txt, md) para resumirlo o responder sobre él.", json!({"ruta": s("ruta"), "desde_pagina": n("PDF: primera página"), "hasta_pagina": n("PDF: última página")}), &["ruta"]),
+        f("leer_en_voz_alta", "Lee en voz alta el texto completo de un archivo, si el usuario pide que se lo lean.", json!({"ruta": s("ruta")}), &["ruta"]),
+        f("ocr_pdf", "Pasa OCR a un PDF escaneado o imagen con IureOCR y crea un PDF con texto junto al original.", json!({"ruta": s("ruta"), "idiomas": s("p. ej. spa+eng")}), &["ruta"]),
+        f("info_pdf", "Cuántas páginas tiene un PDF y si ya tiene texto.", json!({"ruta": s("ruta")}), &["ruta"]),
+        f("editar_paginas_pdf", "Crea una copia del PDF quitando, conservando, girando o reordenando páginas. Pide confirmación.", json!({"ruta": s("ruta"), "operacion": {"type": "string", "enum": ["delete", "keep", "rotate", "reorder"]}, "paginas": {"type": "array", "items": {"type": "integer"}}, "grados": n("para rotate: 90, 180 o 270")}), &["ruta", "operacion", "paginas"]),
+        f("grabar_reunion", "Empieza a grabar una reunión en IureTranscribe.", json!({"participantes": s("nombres separados por coma"), "lugar": s("lugar"), "notas": s("tema o notas")}), &[]),
+        f("detener_grabacion", "Detiene y guarda la grabación en curso de IureTranscribe.", json!({}), &[]),
+        f("grabaciones_recientes", "Lista las grabaciones recientes de IureTranscribe (rutas y fechas).", json!({"limite": n("cuántas, 5 por omisión")}), &[]),
+        f("transcribir", "Transcribe un audio con IureTranscribe y devuelve el texto.", json!({"ruta": s("ruta del audio")}), &["ruta"]),
+        f("leer_transcripcion", "Devuelve el texto de una transcripción ya hecha.", json!({"ruta": s("ruta del audio o de la transcripción")}), &["ruta"]),
+    ])
+}
+
+/// Acciones que el agente necesita del resto de la app.
+pub struct Ganchos {
+    /// Pide permiso al usuario (voz y tarjeta): (descripción hablada) → sí/no.
+    pub confirmar: Box<dyn Fn(&str) -> bool + Send + Sync>,
+    /// Pausa (true) o reanuda (false) «siempre escuchando», p. ej. mientras se graba una junta.
+    pub pausar_escucha: Box<dyn Fn(bool) + Send + Sync>,
 }
 
 fn herramientas(con_claude: bool) -> Value {
@@ -50,6 +97,7 @@ fn herramientas(con_claude: bool) -> Value {
         f("hora_fecha", "Da la fecha y hora actuales.", json!({}), &[]),
         f("leer_seleccion", "Lee en voz alta el texto seleccionado (o el del portapapeles).", json!({}), &[]),
         f("leer_pagina", "Lee en voz alta el texto de un artículo web concreto, solo si el usuario pide que se lo lean. Nunca con páginas de buscadores.", json!({"url": s("URL del artículo")}), &["url"]),
+        f("expedientes_y_apps", "Pedidos sobre las apps de Iurefficient en este equipo: archivos de expedientes en IureDav (listar, buscar, abrir, leer, resumir), PDF con IureOCR (OCR, leer páginas, girar o quitar páginas), grabar o transcribir reuniones con IureTranscribe, abrir o crear documentos en IureEditor.", json!({"pedido": s("el pedido completo, con nombres de archivo o carpeta tal como se dijeron")}), &["pedido"]),
     ]);
     if con_claude {
         v.as_array_mut().unwrap().push(f(
@@ -65,12 +113,38 @@ fn herramientas(con_claude: bool) -> Value {
 /// Pide confirmación y, si se concede, lanza la tarea con Claude. Devuelve qué pasó.
 pub type Delegar = Box<dyn Fn(&str) -> Result<String> + Send + Sync>;
 
+/// ¿La instrucción habla de archivos o apps de la suite? Se decide en código: los modelos
+/// chicos confunden «busca el archivo X» con buscar en internet.
+pub fn es_de_la_suite(instruccion: &str) -> bool {
+    let t = instruccion.to_lowercase();
+    const CLAVES: &[&str] = &[
+        "archivo", "documento", "expediente", "carpeta", "pdf", "escrito", "contrato", "grabaci", "grabar",
+        "graba ", "junta", "reunión", "reunion", "transcrib", "transcripc", "editor", "iuredav", "iureocr",
+        "iuretranscribe", "iureditor", "ocr", "unidad", "página ", "páginas",
+    ];
+    let web = pide_web(&t);
+    !web && CLAVES.iter().any(|c| t.contains(c))
+}
+
+/// ¿Pidió explícitamente internet? Sin esto, buscar_web y leer_pagina no se ejecutan.
+fn pide_web(t: &str) -> bool {
+    let t = t.to_lowercase();
+    ["internet", "la web", "en web", "google", "en línea", "en linea", "navegador", "wikipedia", "sitio", "http", ".com", ".mx", "url"]
+        .iter()
+        .any(|c| t.contains(c))
+}
+
 pub struct Agente {
+    /// Instrucción en curso (para los candados de herramientas con efectos fuera).
+    instruccion: std::sync::Mutex<String>,
     cfg: LlmCfg,
     agente: ureq::Agent,
     portal: Option<Portal>,
     voz: Option<Voz>,
     delegar: Option<Delegar>,
+    ganchos: Option<Arc<Ganchos>>,
+    /// Sub-agente de las apps de la suite (otro prompt y otras herramientas).
+    suite: bool,
 }
 
 /// Lo que pasó al ejecutar una instrucción.
@@ -83,7 +157,20 @@ pub struct Informe {
 impl Agente {
     pub fn new(cfg: LlmCfg, portal: Option<Portal>, voz: Option<Voz>) -> Self {
         let agente = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(120))).build().into();
-        Self { cfg, agente, portal, voz, delegar: None }
+        Self { instruccion: Default::default(), cfg, agente, portal, voz, delegar: None, ganchos: None, suite: false }
+    }
+
+    pub fn con_ganchos(mut self, g: Arc<Ganchos>) -> Self {
+        self.ganchos = Some(g);
+        self
+    }
+
+    fn definiciones(&self) -> Value {
+        if self.suite { herramientas_suite() } else { herramientas(self.delegar.is_some()) }
+    }
+
+    fn prompt(&self) -> String {
+        if self.suite { sistema_suite() } else { sistema() }
     }
 
     pub fn con_claude(mut self, delegar: Delegar) -> Self {
@@ -100,25 +187,33 @@ impl Agente {
         let base = crate::llm_local::url(&self.cfg.modelo)?;
         let mensajes = json!([{"role": "system", "content": sistema()}, {"role": "user", "content": "hola"}]);
         let cuerpo = json!({"model": self.cfg.modelo, "temperature": 0, "max_tokens": 1, "messages": mensajes,
-            "tools": herramientas(self.delegar.is_some()), "chat_template_kwargs": {"enable_thinking": false}});
+            "tools": self.definiciones(), "chat_template_kwargs": {"enable_thinking": false}});
         self.agente.post(&format!("{base}/chat/completions")).send_json(&cuerpo)?;
         Ok(())
     }
 
     /// `historial`: turnos recientes (usuario/asistente) para dar continuidad a la conversación.
     pub fn ejecutar(&self, instruccion: &str, historial: &[Value], mut paso: impl FnMut(&str)) -> Result<Informe> {
+        *self.instruccion.lock().unwrap() = instruccion.to_string();
+        // archivos y apps de la suite: directo al sub-agente, sin pasar por el modelo principal
+        if !self.suite && es_de_la_suite(instruccion) {
+            let texto = self.herramienta("expedientes_y_apps", &json!({"pedido": instruccion}))?;
+            paso(&format!("expedientes_y_apps → {}", texto.chars().take(160).collect::<String>()));
+            let respuesta = texto.split(" (hice: ").next().unwrap_or(&texto).trim().to_string();
+            return Ok(Informe { acciones: vec![format!("expedientes_y_apps({})", args_cortos(&json!({"pedido": instruccion})))], respuesta });
+        }
         let mut inf = Informe::default();
         let mut ultimo = String::new();
         // misma herramienta con los mismos datos: no se repite (modelos chicos a veces insisten)
         let mut hechas: Vec<(String, Value, String)> = Vec::new();
-        let mut mensajes = vec![json!({"role": "system", "content": sistema()})];
+        let mut mensajes = vec![json!({"role": "system", "content": self.prompt()})];
         mensajes.extend(historial.iter().cloned());
         mensajes.push(json!({"role": "user", "content": instruccion}));
         for _ in 0..MAX_PASOS {
             let (msg, mut llamadas) = self.llamar(&mensajes)?;
             if llamadas.is_empty() {
                 // modelos chicos a veces escriben la llamada como texto en vez de estructurarla
-                llamadas = llamadas_en_texto(msg["content"].as_str().unwrap_or(""), self.delegar.is_some());
+                llamadas = llamadas_en_texto(msg["content"].as_str().unwrap_or(""), &self.definiciones());
             }
             if llamadas.is_empty() {
                 inf.respuesta = msg["content"].as_str().unwrap_or("").trim().to_string();
@@ -143,7 +238,10 @@ impl Agente {
                     }
                 };
                 ultimo = texto.clone();
-                let accion = format!("{nombre}({}) → {texto}", args_cortos(&args));
+                // en el registro de acciones basta el inicio del resultado (puede ser un archivo entero)
+                let corto: String = texto.chars().take(160).collect();
+                let corto = if texto.chars().count() > 160 { format!("{corto}…") } else { corto };
+                let accion = format!("{nombre}({}) → {corto}", args_cortos(&args));
                 paso(&accion);
                 inf.acciones.push(accion);
                 let mut r = json!({"role": "tool", "content": texto});
@@ -164,6 +262,9 @@ impl Agente {
         match nombre {
             "abrir_aplicacion" => esc::abrir_aplicacion(&s("nombre")?),
             "abrir_url" => esc::abrir_url(&s("url")?),
+            "buscar_web" if !pide_web(&self.instruccion.lock().unwrap()) => {
+                bail!("no se pidió buscar en internet; si se trata de archivos o expedientes usa expedientes_y_apps, y si es una pregunta general responde tú")
+            }
             "buscar_web" => esc::buscar_web(&s("consulta")?),
             "abrir_carpeta" => esc::abrir_carpeta(&s("nombre")?),
             "calcular" => esc::calcular(&s("expresion")?),
@@ -186,6 +287,60 @@ impl Agente {
                 Ok(format!("leyendo {} palabras en voz alta", t.split_whitespace().count()))
             }
             "pedir_a_claude" => self.delegar.as_ref().context("Claude no está habilitado")?(&s("tarea")?),
+            "expedientes_y_apps" => {
+                // sub-agente con las herramientas de la suite: el prompt principal no crece
+                let mut sub = Agente::new(self.cfg.clone(), None, self.voz.clone());
+                sub.suite = true;
+                sub.ganchos = self.ganchos.clone();
+                let inf = sub.ejecutar(&s("pedido")?, &[], |_| {})?;
+                let hecho = if inf.acciones.is_empty() { String::new() } else { format!(" (hice: {})", inf.acciones.join("; ")) };
+                Ok(format!("{}{hecho}", inf.respuesta))
+            }
+            "archivos" => crate::suite::archivos(a["carpeta"].as_str(), a["buscar"].as_str()),
+            "abrir_archivo" => crate::suite::abrir(&s("ruta")?, a["con_editor"].as_bool().unwrap_or(false)),
+            "nuevo_documento" => crate::suite::nuevo_documento(),
+            "leer_archivo" => crate::suite::texto(&s("ruta")?, a["desde_pagina"].as_u64(), a["hasta_pagina"].as_u64()),
+            "leer_en_voz_alta" => {
+                let t = crate::suite::texto(&s("ruta")?, None, None)?;
+                self.voz.as_ref().context("la voz está desactivada")?.decir(t.clone());
+                Ok(format!("leyendo {} palabras en voz alta", t.split_whitespace().count()))
+            }
+            "ocr_pdf" => crate::suite::ocr(&s("ruta")?, a["idiomas"].as_str()),
+            "info_pdf" => crate::suite::info_pdf(&s("ruta")?),
+            "editar_paginas_pdf" => {
+                let ruta = s("ruta")?;
+                let op = s("operacion")?;
+                let paginas: Vec<u64> = a["paginas"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+                let grados = a["grados"].as_i64();
+                let desc = crate::suite::describir_edicion(&ruta, &op, &paginas, grados);
+                // crea un archivo nuevo: se confirma antes
+                let ok = self.ganchos.as_ref().is_some_and(|g| (g.confirmar)(&desc));
+                if !ok {
+                    return Ok("el usuario no lo permitió".into());
+                }
+                crate::suite::editar_pdf(&ruta, &op, &paginas, grados)
+            }
+            "grabar_reunion" => {
+                let r = crate::suite::grabar(a["participantes"].as_str(), a["lugar"].as_str(), a["notas"].as_str())?;
+                // la junta no debe tomarse como instrucciones
+                if let Some(g) = &self.ganchos {
+                    (g.pausar_escucha)(true);
+                }
+                Ok(r)
+            }
+            "detener_grabacion" => {
+                let r = crate::suite::detener_grabacion()?;
+                if let Some(g) = &self.ganchos {
+                    (g.pausar_escucha)(false);
+                }
+                Ok(r)
+            }
+            "grabaciones_recientes" => crate::suite::grabaciones(a["limite"].as_u64().unwrap_or(5)),
+            "transcribir" => crate::suite::transcribir(&s("ruta")?),
+            "leer_transcripcion" => crate::suite::leer_transcripcion(&s("ruta")?),
+            "leer_pagina" if !pide_web(&self.instruccion.lock().unwrap()) && !self.instruccion.lock().unwrap().to_lowercase().contains("página") => {
+                bail!("no se pidió leer una página web")
+            }
             "leer_pagina" => {
                 let t = esc::texto_de_pagina(&s("url")?)?;
                 self.voz.as_ref().context("la voz está desactivada")?.decir(t.clone());
@@ -208,11 +363,11 @@ impl Agente {
             Servicio::Ollama => (
                 format!("{base}/api/chat"),
                 json!({"model": self.cfg.modelo, "stream": false, "think": false, "keep_alive": "30m",
-                    "options": {"temperature": 0, "num_ctx": 4096}, "messages": mensajes, "tools": herramientas(self.delegar.is_some())}),
+                    "options": {"temperature": 0, "num_ctx": 4096}, "messages": mensajes, "tools": self.definiciones()}),
                 None,
             ),
             Servicio::OpenRouter | Servicio::OpenAi | Servicio::Local => {
-                let mut c = json!({"model": self.cfg.modelo, "temperature": 0, "messages": mensajes, "tools": herramientas(self.delegar.is_some())});
+                let mut c = json!({"model": self.cfg.modelo, "temperature": 0, "messages": mensajes, "tools": self.definiciones()});
                 if self.cfg.servicio == Servicio::OpenRouter {
                     c["reasoning"] = json!({"enabled": false});
                 } else {
@@ -255,8 +410,7 @@ impl Agente {
 /// Reconoce llamadas escritas como texto, p. ej. el formato nativo de Gemma:
 /// `abrir_aplicacion{nombre:<|"|>Excel<|"|>}`, `calcular{expresion:"2+2"}` o al estilo
 /// función: `calcular(1585 * 0.23)`, `abrir_url(url="…")`, `hora_fecha()`.
-fn llamadas_en_texto(texto: &str, con_claude: bool) -> Vec<(String, String, Value)> {
-    let defs = herramientas(con_claude);
+fn llamadas_en_texto(texto: &str, defs: &Value) -> Vec<(String, String, Value)> {
     let nombres: Vec<String> = defs
         .as_array()
         .map(|v| v.iter().filter_map(|h| h["function"]["name"].as_str().map(str::to_string)).collect())
@@ -343,19 +497,29 @@ mod pruebas {
     use super::*;
 
     #[test]
+    fn enrutamiento_por_palabras() {
+        assert!(es_de_la_suite("busca el flujo de despacho de Heralva y dime cuántas páginas tiene"));
+        assert!(es_de_la_suite("graba la junta con Pérez"));
+        assert!(!es_de_la_suite("busca en internet quién fue Porfirio Díaz"));
+        assert!(!es_de_la_suite("¿cuánto es el 15 % de 2300?"));
+        assert!(pide_web("busca en google el clima"));
+        assert!(!pide_web("busca el contrato de Juárez"));
+    }
+
+    #[test]
     fn llamada_escrita_como_texto() {
-        let v = llamadas_en_texto("abrir_aplicacion{nombre:<|\"|>Excel<|\"|>}", false);
+        let v = llamadas_en_texto("abrir_aplicacion{nombre:<|\"|>Excel<|\"|>}", &herramientas(false));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].1, "abrir_aplicacion");
         assert_eq!(v[0].2["nombre"], "Excel");
-        let v = llamadas_en_texto("volumen{accion:\"subir\",cantidad:20}", false);
+        let v = llamadas_en_texto("volumen{accion:\"subir\",cantidad:20}", &herramientas(false));
         assert_eq!(v[0].2["cantidad"], 20);
-        assert!(llamadas_en_texto("Listo, ya abrí la calculadora.", false).is_empty());
-        let v = llamadas_en_texto("calcular(1585 * (0.23))", false);
+        assert!(llamadas_en_texto("Listo, ya abrí la calculadora.", &herramientas(false)).is_empty());
+        let v = llamadas_en_texto("calcular(1585 * (0.23))", &herramientas(false));
         assert_eq!((v[0].1.as_str(), v[0].2["expresion"].as_str()), ("calcular", Some("1585 * (0.23)")));
-        let v = llamadas_en_texto("hora_fecha()", false);
+        let v = llamadas_en_texto("hora_fecha()", &herramientas(false));
         assert_eq!(v[0].1, "hora_fecha");
-        let v = llamadas_en_texto("abrir_url(url=\"es.wikipedia.org\")", false);
+        let v = llamadas_en_texto("abrir_url(url=\"es.wikipedia.org\")", &herramientas(false));
         assert_eq!(v[0].2["url"], "es.wikipedia.org");
     }
 }

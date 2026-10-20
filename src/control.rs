@@ -40,6 +40,8 @@ pub enum Control {
     Despertar,
     /// Activa o desactiva el modo «siempre escuchando».
     Vigilia(bool),
+    /// Pausa (true) o reanuda (false) la escucha sin cambiar la preferencia del usuario.
+    PausarVigilia(bool),
 }
 
 /// Avisos para la interfaz que no son del motor.
@@ -110,6 +112,8 @@ impl Controlador {
                 let mut dictando = false;
                 let mut por_comando = false; // instrucción, permiso o palabra clave
                 let mut numero = 0u64;
+                // «siempre escuchando» quedó en pausa (p. ej. mientras se graba una junta)
+                let mut pausada = false;
                 let abrir = |e: &Estado| {
                     let m = motor.clone();
                     let hablando = voz.as_ref().map(|v| v.hablando.clone());
@@ -177,7 +181,19 @@ impl Controlador {
                             }
                         }
                         Control::FinComando => fin_comando(&mut por_comando, dictando),
+                        Control::PausarVigilia(si) => {
+                            if si && e.vigilia.load(Ordering::Relaxed) {
+                                log("siempre escuchando: en pausa");
+                                e.vigilia.store(false, Ordering::Relaxed);
+                                pausada = true;
+                            } else if !si && pausada {
+                                log("siempre escuchando: reanudado");
+                                e.vigilia.store(true, Ordering::Relaxed);
+                                pausada = false;
+                            }
+                        }
                         Control::Vigilia(si) => {
+                            pausada = false;
                             log(if si { "siempre escuchando: activo" } else { "siempre escuchando: inactivo" });
                             e.vigilia.store(si, Ordering::Relaxed);
                         }
@@ -200,7 +216,7 @@ impl Controlador {
                                 let _ = viejo.send(false);
                             }
                             if let Some(v) = &voz {
-                                v.decir(format!("Claude quiere {hablada}. ¿Lo permito?"));
+                                v.decir(format!("{hablada} ¿Lo permito?"));
                             }
                             por_comando = true;
                             // vence a los 100 s (el servidor de permisos espera 120)
@@ -317,7 +333,7 @@ pub fn escuchar_socket(ctl: Controlador) {
                     // petición de `iurevoz mcp-permisos`: se responde «si» o «no» por el mismo socket
                     let v = serde_json::from_str::<serde_json::Value>(json).unwrap_or_default();
                     let desc = v["descripcion"].as_str().unwrap_or("hacer una acción").to_string();
-                    let hablada = v["hablada"].as_str().map_or_else(|| desc.clone(), str::to_string);
+                    let hablada = format!("Claude quiere {}.", v["hablada"].as_str().unwrap_or(&desc));
                     let ctl = ctl.clone();
                     std::thread::spawn(move || {
                         let (tx, rx) = crossbeam_channel::bounded(1);

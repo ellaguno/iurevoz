@@ -244,6 +244,7 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                         }
                         continue;
                     }
+                    punt.markdown = cfg.dictado_markdown;
                     let texto = punt.procesar(&t, cfg.puntuacion_dictada);
                     // «nuevo párrafo» solo produce saltos de línea: no se descarta
                     if texto.is_empty() {
@@ -466,14 +467,25 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
                 continue;
             }
         }
-        let mut ag = Agente::new(cfg.comandos.llm.clone(), portal.clone(), voz.clone());
+        let ganchos = {
+            let (c1, c2) = (control.clone(), control.clone());
+            std::sync::Arc::new(crate::agente::Ganchos {
+                confirmar: Box::new(move |desc: &str| {
+                    let (tx, rx) = crossbeam_channel::bounded(1);
+                    let _ = c1.send(Control::Permiso(desc.to_string(), format!("Voy a {desc}."), tx));
+                    rx.recv_timeout(std::time::Duration::from_secs(110)).unwrap_or(false)
+                }),
+                pausar_escucha: Box::new(move |si| drop(c2.send(Control::PausarVigilia(si)))),
+            })
+        };
+        let mut ag = Agente::new(cfg.comandos.llm.clone(), portal.clone(), voz.clone()).con_ganchos(ganchos);
         if cfg.comandos.claude {
             let (control, ev, v) = (control.clone(), ev.clone(), voz_resp.clone());
             ag = ag.con_claude(Box::new(move |tarea: &str| {
                 // el modelo local decidió delegar: se confirma antes de mandar nada fuera
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 let resumen: String = tarea.split(['.', ',', '(']).next().unwrap_or(tarea).trim().to_string();
-                let _ = control.send(Control::Permiso(format!("encargarse de: {tarea}"), format!("encargarse de {resumen}"), tx));
+                let _ = control.send(Control::Permiso(format!("encargarse de: {tarea}"), format!("Claude quiere encargarse de {resumen}."), tx));
                 if rx.recv_timeout(std::time::Duration::from_secs(110)).unwrap_or(false) {
                     lanzar_claude(id, tarea.to_string(), v.clone(), ev.clone());
                     Ok("le pasé la tarea a Claude; avisaré cuando termine".into())

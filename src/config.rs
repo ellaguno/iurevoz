@@ -143,6 +143,8 @@ pub struct Config {
     /// Silencio (s) que cierra una frase.
     pub silencio: f32,
     pub puntuacion_dictada: bool,
+    /// Comandos de formato Markdown al dictar («título uno», «abre negritas»…), p. ej. en IureEditor.
+    pub dictado_markdown: bool,
     pub inyeccion: Inyeccion,
     pub correccion: Correccion,
     pub comandos: Comandos,
@@ -159,6 +161,7 @@ impl Default for Config {
             hilos: 4,
             silencio: 0.5,
             puntuacion_dictada: true,
+            dictado_markdown: false,
             inyeccion: Inyeccion::Teclear,
             correccion: Correccion::default(),
             comandos: Comandos::default(),

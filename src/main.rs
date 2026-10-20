@@ -17,6 +17,7 @@ mod motor;
 mod portal;
 mod puntuacion;
 mod rasgos;
+mod suite;
 mod teclas;
 mod ui;
 mod vigilia;
@@ -174,6 +175,7 @@ fn main() -> Result<()> {
             let sin_portal = args.iter().any(|a| a == "--sin-portal");
             let r = ui::ejecutar(Config::cargar(), sin_portal);
             llm_local::apagar();
+            suite::apagar();
             r.map_err(|e| anyhow::anyhow!("{e}"))?;
         }
     }

@@ -356,6 +356,11 @@ impl App {
             ui.label("Puntuación dictada");
             cambio |= ui.checkbox(&mut self.cfg.puntuacion_dictada, "«coma», «punto», «punto y aparte»…").changed();
             ui.end_row();
+            ui.label("Formato Markdown");
+            cambio |= ui
+                .checkbox(&mut self.cfg.dictado_markdown, "«título uno», «abre negritas», «casilla»… (IureEditor)")
+                .changed();
+            ui.end_row();
 
             ui.label("Escribir en la ventana activa");
             let mut teclear = self.cfg.inyeccion == Inyeccion::Teclear;
@@ -613,12 +618,12 @@ impl App {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
     }
 
-    /// Permiso pendiente de Claude: también se responde diciendo «sí» o «no».
+    /// Permiso pendiente (Claude o una acción que crea archivos): también se responde con «sí» o «no».
     fn permiso(&mut self, ui: &mut egui::Ui) {
         let desc = self.ctl.estado.pendiente.lock().unwrap().as_ref().map(|(_, d, _)| d.clone());
         let Some(desc) = desc else { return };
         egui::Frame::group(ui.style()).fill(Color32::from_rgba_unmultiplied(200, 150, 0, 30)).show(ui, |ui| {
-            ui.label(RichText::new("Claude pide permiso").strong());
+            ui.label(RichText::new("Se pide tu permiso").strong());
             ui.label(RichText::new(&desc).size(15.0));
             ui.horizontal(|ui| {
                 if ui.button(RichText::new("✔ Permitir").size(15.0)).clicked() {
@@ -774,6 +779,8 @@ pub fn ejecutar(cfg: Config, sin_portal: bool) -> eframe::Result {
             if cfg.escucha.siempre {
                 ctl.enviar(Control::Vigilia(true));
             }
+            // índice de nombres de la unidad de IureDav (recorrerla es lento)
+            crate::suite::indexar_en_fondo();
             // LLM local: se arranca y precalienta en segundo plano para que la primera instrucción sea rápida
             if cfg.comandos.activos && cfg.comandos.llm.servicio == Servicio::Local {
                 let c = cfg.clone();

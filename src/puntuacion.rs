@@ -46,6 +46,21 @@ const COMANDOS: &[(&[&str], &str)] = &[
     (&["coma"], ","),
 ];
 
+/// Comandos de formato Markdown (modo para IureEditor u otros editores que lo interpretan).
+/// Las negritas y cursivas usan marcas internas para decidir espacios; al final son `**` y `*`.
+const MARKDOWN: &[(&[&str], &str)] = &[
+    (&["título", "uno"], "\n# "),
+    (&["título", "dos"], "\n## "),
+    (&["título", "tres"], "\n### "),
+    (&["abre", "negritas"], "\u{2}"),
+    (&["cierra", "negritas"], "\u{3}"),
+    (&["abre", "cursivas"], "\u{4}"),
+    (&["cierra", "cursivas"], "\u{5}"),
+    (&["bloque", "de", "cita"], "\n> "),
+    (&["línea", "horizontal"], "\n---\n"),
+    (&["casilla"], "\n- [ ] "),
+];
+
 /// Marca de «viñeta numerada»: se sustituye por «\n1. », «\n2. »… según el contador.
 const NUMERADA: &str = "\u{1}";
 
@@ -59,11 +74,11 @@ const DETERMINANTES: &[&str] = &[
 
 /// Signos que se pegan a la palabra anterior / a la siguiente.
 fn pega_izquierda(s: &str) -> bool {
-    matches!(s.chars().next(), Some(',' | '.' | ';' | ':' | '?' | '!' | ')' | '”' | '…' | '\n'))
+    matches!(s.chars().next(), Some(',' | '.' | ';' | ':' | '?' | '!' | ')' | '”' | '…' | '\n' | '\u{3}' | '\u{5}'))
 }
 fn pega_derecha(s: &str) -> bool {
     // «\n- » y «\n1. » ya traen su espacio
-    matches!(s.chars().last(), Some('¿' | '¡' | '(' | '“' | '\n' | ' '))
+    matches!(s.chars().last(), Some('¿' | '¡' | '(' | '“' | '\n' | ' ' | '\u{2}' | '\u{4}'))
 }
 fn cierra_oracion(s: &str) -> bool {
     s.ends_with(' ') || matches!(s.trim_end_matches([' ', '”', ')']).chars().last(), Some('.' | '?' | '!' | '…' | '\n'))
@@ -90,11 +105,13 @@ pub struct Puntuador {
     iniciado: bool,
     /// Último número usado en una lista numerada; se reinicia con cada párrafo.
     numero: u32,
+    /// Comandos de formato Markdown activos.
+    pub markdown: bool,
 }
 
 impl Puntuador {
     pub fn new() -> Self {
-        Self { fin_oracion: true, pegar: true, iniciado: false, numero: 0 }
+        Self { fin_oracion: true, pegar: true, iniciado: false, numero: 0, markdown: false }
     }
 
     /// Resuelve la viñeta numerada y reinicia la numeración en cada párrafo.
@@ -111,7 +128,9 @@ impl Puntuador {
     }
 
     pub fn reiniciar(&mut self) {
+        let markdown = self.markdown;
         *self = Self::new();
+        self.markdown = markdown;
     }
 
     /// Convierte una frase y devuelve el texto a insertar, con el espacio inicial
@@ -145,7 +164,8 @@ impl Puntuador {
         }
         'fuera: while i < palabras.len() {
             if dictada {
-                for (habla, signo) in COMANDOS {
+                let extra: &[(&[&str], &str)] = if self.markdown { MARKDOWN } else { &[] };
+                for (habla, signo) in extra.iter().chain(COMANDOS) {
                     let n = habla.len();
                     if i + n <= palabras.len() && limpias[i..i + n].iter().zip(habla.iter()).all(|(a, b)| a == b) {
                         if es_sustantivo(&limpias, i, n) {
@@ -194,7 +214,7 @@ impl Puntuador {
         self.pegar = pegar;
         // comillas tipográficas solo para decidir espacios: se escriben rectas, que todo
         // teclado puede producir
-        salida.replace(['“', '”'], "\"")
+        salida.replace(['“', '”'], "\"").replace(['\u{2}', '\u{3}'], "**").replace(['\u{4}', '\u{5}'], "*")
     }
 }
 
@@ -267,6 +287,15 @@ mod pruebas {
         let mut p = Puntuador::new();
         assert_eq!(p.procesar("pendientes dos puntos viñeta revisar contrato", true), "Pendientes:\n- Revisar contrato");
         assert_eq!(p.procesar("viñeta llamar al cliente", true), "\n- Llamar al cliente");
+    }
+
+    #[test]
+    fn markdown() {
+        let mut p = Puntuador::new();
+        p.markdown = true;
+        assert_eq!(p.procesar("título uno informe de avance", true), "\n# Informe de avance");
+        assert_eq!(p.procesar("es abre negritas urgente cierra negritas punto", true), " es **urgente**.");
+        assert_eq!(Puntuador::new().procesar("título uno informe", true), "Título uno informe");
     }
 
     #[test]
