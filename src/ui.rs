@@ -558,7 +558,9 @@ pub fn ejecutar(cfg: Config, sin_portal: bool) -> eframe::Result {
             let (tx_ui, rx_ui) = crossbeam_channel::unbounded::<ParaUi>();
             let (tx_aviso, rx_aviso) = crossbeam_channel::unbounded::<Aviso>();
             let portal = (!sin_portal).then(|| {
-                Portal::iniciar(cfg.token_portal.clone(), true, move |a| drop(tx_aviso.send(a)))
+                // con los atajos de GNOME instalados no hace falta el portal (que en GNOME 50 no responde)
+                let atajo_portal = !crate::atajos_gnome::instalados();
+                Portal::iniciar(cfg.token_portal.clone(), atajo_portal, move |a| drop(tx_aviso.send(a)))
             });
             let voz = {
                 let tx = tx_ui.clone();

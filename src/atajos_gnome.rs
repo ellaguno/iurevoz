@@ -24,6 +24,11 @@ fn gsettings(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Texto → cadena GVariant ('…' con escapes), como la espera `gsettings set`.
+fn gv(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
 /// Rutas de los atajos personalizados actuales.
 fn lista() -> Result<Vec<String>> {
     let s = gsettings(&["get", ESQUEMA, "custom-keybindings"])?;
@@ -41,9 +46,10 @@ pub fn instalar() -> Result<String> {
     for (id, nombre, orden, combinacion) in ATAJOS {
         let ruta = format!("{BASE}/{id}/");
         let esq = format!("{ESQUEMA}.custom-keybinding:{ruta}");
-        gsettings(&["set", &esq, "name", nombre])?;
-        gsettings(&["set", &esq, "command", &format!("'{exe}' {orden}")])?;
-        gsettings(&["set", &esq, "binding", combinacion])?;
+        // la ruta va entre comillas dobles por si tiene espacios (GNOME la parte como un shell)
+        gsettings(&["set", &esq, "name", &gv(nombre)])?;
+        gsettings(&["set", &esq, "command", &gv(&format!("\"{exe}\" {orden}"))])?;
+        gsettings(&["set", &esq, "binding", &gv(combinacion)])?;
         if !l.contains(&ruta) {
             l.push(ruta);
         }
@@ -51,4 +57,14 @@ pub fn instalar() -> Result<String> {
     let valor = format!("[{}]", l.iter().map(|p| format!("'{p}'")).collect::<Vec<_>>().join(", "));
     gsettings(&["set", ESQUEMA, "custom-keybindings", &valor])?;
     Ok("Atajos instalados: Ctrl+Alt+Espacio dictar, Ctrl+Alt+C instrucción, Ctrl+Alt+L leer. Se cambian en Configuración → Teclado.".into())
+}
+
+#[cfg(test)]
+mod pruebas {
+    #[test]
+    fn cadenas_gvariant() {
+        assert_eq!(super::gv("a b"), "'a b'");
+        assert_eq!(super::gv("it's"), "'it\\'s'");
+        assert_eq!(super::gv("\"/ruta x/iurevoz\" leer"), "'\"/ruta x/iurevoz\" leer'");
+    }
 }
