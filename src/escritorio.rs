@@ -107,6 +107,9 @@ const SINONIMOS: &[(&str, &[&str])] = &[
     ("captura de pantalla", &["screenshot"]),
     ("hoja de calculo", &["calc", "spreadsheet"]),
     ("procesador de textos", &["writer", "word processor"]),
+    ("excel", &["calc", "spreadsheet", "hoja de calculo"]),
+    ("word", &["writer", "word processor"]),
+    ("powerpoint", &["impress", "presentation"]),
 ];
 
 /// Índice de aplicaciones, armado una vez por proceso (gettext es lento).
@@ -135,7 +138,9 @@ fn aplicaciones() -> Vec<App> {
 }
 
 pub fn abrir_aplicacion(nombre: &str) -> Result<String> {
+    // «mi excel», «el navegador»: los posesivos y artículos no son parte del nombre
     let q = normalizar(nombre.trim());
+    let q = ["mi ", "el ", "la ", "los ", "las ", "un ", "una "].iter().fold(q, |q, p| q.strip_prefix(p).map(str::to_string).unwrap_or(q));
     if q.is_empty() {
         bail!("falta el nombre de la aplicación");
     }

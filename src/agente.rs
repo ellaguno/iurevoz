@@ -18,6 +18,8 @@ fn sistema() -> String {
         "Eres IureVoz, un asistente que controla el escritorio Linux (GNOME) de quien te habla. \
 La instrucción viene de un reconocedor de voz y puede tener errores: interpreta la intención. \
 Usa SOLO las herramientas disponibles; si algo no se puede hacer con ellas, dilo. \
+Si la instrucción suena a abrir algo (aunque esté mal escrita, p. ej. «apre» o «habre»), usa abrir_aplicacion. \
+Nunca digas que hiciste o harás algo sin haber llamado la herramienta correspondiente. \
 Para cualquier cuenta usa la herramienta calcular, nunca calcules de memoria. \
 Cuando termines responde en español, en una o dos frases cortas, porque tu respuesta se lee en voz alta. \
 No uses markdown ni listas. Fecha y hora actuales: {}.",
@@ -68,20 +70,30 @@ impl Agente {
 
     pub fn ejecutar(&self, instruccion: &str, mut paso: impl FnMut(&str)) -> Result<Informe> {
         let mut inf = Informe::default();
+        let mut ultimo = String::new();
         let mut mensajes = vec![json!({"role": "system", "content": sistema()}), json!({"role": "user", "content": instruccion})];
         for _ in 0..MAX_PASOS {
-            let (msg, llamadas) = self.llamar(&mensajes)?;
+            let (msg, mut llamadas) = self.llamar(&mensajes)?;
+            if llamadas.is_empty() {
+                // modelos chicos a veces escriben la llamada como texto en vez de estructurarla
+                llamadas = llamadas_en_texto(msg["content"].as_str().unwrap_or(""));
+            }
             if llamadas.is_empty() {
                 inf.respuesta = msg["content"].as_str().unwrap_or("").trim().to_string();
+                if inf.respuesta.is_empty() && !ultimo.is_empty() {
+                    // sin redacción del modelo: se informa el resultado de la última acción
+                    inf.respuesta = format!("Listo: {ultimo}.");
+                }
                 return Ok(inf);
             }
-            mensajes.push(msg);
+            mensajes.push(msg.clone());
             for (id, nombre, args) in llamadas {
                 let res = self.herramienta(&nombre, &args);
                 let texto = match &res {
                     Ok(t) => t.clone(),
                     Err(e) => format!("error: {e:#}"),
                 };
+                ultimo = texto.clone();
                 let accion = format!("{nombre}({}) → {texto}", args_cortos(&args));
                 paso(&accion);
                 inf.acciones.push(accion);
@@ -181,10 +193,55 @@ impl Agente {
     }
 }
 
+/// Reconoce llamadas escritas como texto, p. ej. el formato nativo de Gemma:
+/// `abrir_aplicacion{nombre:<|"|>Excel<|"|>}` o `calcular{expresion:"2+2"}`.
+fn llamadas_en_texto(texto: &str) -> Vec<(String, String, Value)> {
+    let nombres: Vec<String> = herramientas()
+        .as_array()
+        .map(|v| v.iter().filter_map(|h| h["function"]["name"].as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for n in nombres {
+        let mut resto = texto;
+        while let Some(i) = resto.find(&format!("{n}{{")) {
+            let cuerpo_ini = i + n.len() + 1;
+            let Some(fin) = resto[cuerpo_ini..].find('}') else { break };
+            let cuerpo = resto[cuerpo_ini..cuerpo_ini + fin].replace("<|\"|>", "\"");
+            let mut args = serde_json::Map::new();
+            for par in cuerpo.split(',') {
+                if let Some((k, v)) = par.split_once(':') {
+                    let v = v.trim().trim_matches('"');
+                    let valor = v.parse::<i64>().map(Value::from).unwrap_or_else(|_| Value::from(v));
+                    args.insert(k.trim().trim_matches('"').to_string(), valor);
+                }
+            }
+            out.push((String::new(), n.clone(), Value::Object(args)));
+            resto = &resto[cuerpo_ini + fin..];
+        }
+    }
+    out
+}
+
 fn args_cortos(a: &Value) -> String {
     let s = match a.as_object() {
         Some(o) => o.values().map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).collect::<Vec<_>>().join(", "),
         None => String::new(),
     };
     if s.chars().count() > 60 { format!("{}…", s.chars().take(60).collect::<String>()) } else { s }
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    #[test]
+    fn llamada_escrita_como_texto() {
+        let v = llamadas_en_texto("abrir_aplicacion{nombre:<|\"|>Excel<|\"|>}");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].1, "abrir_aplicacion");
+        assert_eq!(v[0].2["nombre"], "Excel");
+        let v = llamadas_en_texto("volumen{accion:\"subir\",cantidad:20}");
+        assert_eq!(v[0].2["cantidad"], 20);
+        assert!(llamadas_en_texto("Listo, ya abrí la calculadora.").is_empty());
+    }
 }
