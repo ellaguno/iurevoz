@@ -22,6 +22,8 @@ pub enum Control {
     Alternar,
     /// Escuchar una instrucción (abre el micrófono si hace falta).
     Comando,
+    /// Igual, pero sin callar la voz: para escuchar la respuesta a una pregunta del asistente.
+    Seguir,
     /// El motor ya recibió la instrucción: si el micrófono se abrió solo para ella, se cierra.
     FinComando,
     /// Leer la selección en voz alta, o callar si ya está hablando.
@@ -141,10 +143,12 @@ impl Controlador {
                                 e.nivel.store(0, Ordering::Relaxed);
                             }
                         }
-                        Control::Comando => {
+                        Control::Comando | Control::Seguir => {
                             log("escuchando instrucción");
-                            if let Some(v) = &voz {
-                                v.callar();
+                            if matches!(orden, Control::Comando) {
+                                if let Some(v) = &voz {
+                                    v.callar();
+                                }
                             }
                             e.modo_comando.store(true, Ordering::Relaxed);
                             if captura.is_none() {

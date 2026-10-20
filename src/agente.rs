@@ -22,7 +22,9 @@ Si la instrucción suena a abrir algo (aunque esté mal escrita, p. ej. «apre»
 Nunca digas que hiciste o harás algo sin haber llamado la herramienta correspondiente. \
 Para cualquier cuenta usa la herramienta calcular, nunca calcules de memoria. \
 Cuando termines responde en español, en una o dos frases cortas, porque tu respuesta se lee en voz alta. \
-No uses markdown ni listas. Fecha y hora actuales: {}.",
+No uses markdown ni listas. Si la instrucción completa o responde a algo de los mensajes anteriores \
+(p. ej. solo un número tras preguntar «¿de qué cantidad?»), úsala junto con ese contexto. \
+Fecha y hora actuales: {}.",
         esc::hora_fecha()
     )
 }
@@ -86,10 +88,13 @@ impl Agente {
         self
     }
 
-    pub fn ejecutar(&self, instruccion: &str, mut paso: impl FnMut(&str)) -> Result<Informe> {
+    /// `historial`: turnos recientes (usuario/asistente) para dar continuidad a la conversación.
+    pub fn ejecutar(&self, instruccion: &str, historial: &[Value], mut paso: impl FnMut(&str)) -> Result<Informe> {
         let mut inf = Informe::default();
         let mut ultimo = String::new();
-        let mut mensajes = vec![json!({"role": "system", "content": sistema()}), json!({"role": "user", "content": instruccion})];
+        let mut mensajes = vec![json!({"role": "system", "content": sistema()})];
+        mensajes.extend(historial.iter().cloned());
+        mensajes.push(json!({"role": "user", "content": instruccion}));
         for _ in 0..MAX_PASOS {
             let (msg, mut llamadas) = self.llamar(&mensajes)?;
             if llamadas.is_empty() {

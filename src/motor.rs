@@ -134,6 +134,29 @@ fn para_claude(instruccion: &str) -> Option<String> {
     (!resto.is_empty()).then(|| resto.to_string())
 }
 
+/// Silencio tras la última frase que da por terminada una instrucción.
+const FIN_INSTRUCCION: std::time::Duration = std::time::Duration::from_millis(1000);
+
+struct EnCurso {
+    texto: String,
+    ultimo: std::time::Instant,
+    hablando: bool,
+}
+
+impl EnCurso {
+    fn new(t: &str) -> Self {
+        Self { texto: t.trim().to_string(), ultimo: std::time::Instant::now(), hablando: false }
+    }
+
+    fn agregar(&mut self, t: &str) {
+        // «¿Cuánto es el quince por ciento» + «de 200»: el signo de cierre sobra a media frase
+        let base = self.texto.trim_end_matches(['.', '?', '!']).to_string();
+        self.texto = format!("{base} {}", t.trim());
+        self.ultimo = std::time::Instant::now();
+        self.hablando = false;
+    }
+}
+
 /// A dónde va cada frase final.
 struct Rutas {
     salida: Sender<(usize, String, Config)>,
@@ -176,10 +199,23 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
     let grabar = std::env::var_os("IUREVOZ_GRABAR").is_some();
     let mut grabacion: Vec<f32> = Vec::new();
 
-    let mut emitir = |salidas: Vec<Salida>, cfg: &Config, punt: &mut Puntuador| {
+    // instrucción que se va armando con varias frases (el usuario puede pausar para pensar)
+    let mut instr: Option<EnCurso> = None;
+    let mut ultimo_envio: Option<std::time::Instant> = None;
+    let modo = |r: &Rutas| r.estado.modo_comando.load(std::sync::atomic::Ordering::Relaxed);
+
+    let emitir = |salidas: Vec<Salida>, cfg: &Config, punt: &mut Puntuador, instr: &mut Option<EnCurso>, id: &mut usize| {
         for s in salidas {
             match s {
-                Salida::Parcial(t) => ev.enviar(Evento::Parcial(t)),
+                Salida::Parcial(t) => {
+                    if let Some(e) = instr.as_mut() {
+                        e.hablando = !t.is_empty();
+                        if e.hablando {
+                            e.ultimo = std::time::Instant::now();
+                        }
+                    }
+                    ev.enviar(Evento::Parcial(t))
+                }
                 Salida::Final(t) => {
                     if std::env::var_os("IUREVOZ_LOG").is_some() {
                         eprintln!("[iurevoz] asr: {t:?}");
@@ -191,9 +227,13 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                         }
                         continue; // mientras se espera el permiso nada se dicta
                     }
-                    // ¿instrucción en vez de dictado?
-                    let instruccion = if rutas.estado.modo_comando.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                        let _ = rutas.control.send(Control::FinComando);
+                    // continuación de una instrucción en curso
+                    if let Some(e) = instr.as_mut() {
+                        e.agregar(&t);
+                        continue;
+                    }
+                    // ¿empieza una instrucción?
+                    let inicio = if modo(&rutas) {
                         // también se quita el prefijo si se dijo por costumbre
                         Some(quitar_prefijo(&t, &cfg.comandos.prefijo, true).filter(|r| !r.is_empty()).unwrap_or_else(|| t.clone()))
                     } else if cfg.comandos.activos {
@@ -201,15 +241,13 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                     } else {
                         None
                     };
-                    if let Some(i) = instruccion {
+                    if let Some(i) = inicio {
+                        rutas.estado.modo_comando.store(true, std::sync::atomic::Ordering::Relaxed);
                         if i.is_empty() {
-                            // solo se dijo el prefijo: la siguiente frase es la instrucción
-                            rutas.estado.modo_comando.store(true, std::sync::atomic::Ordering::Relaxed);
+                            // solo se dijo el prefijo: se espera la instrucción
                             ev.enviar(Evento::EsperandoComando);
                         } else {
-                            id += 1;
-                            ev.enviar(Evento::Comando { id, instruccion: i.clone() });
-                            let _ = rutas.agente.send((id, i, cfg.clone()));
+                            *instr = Some(EnCurso::new(&i));
                         }
                         continue;
                     }
@@ -218,12 +256,26 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                     if texto.is_empty() {
                         continue;
                     }
-                    id += 1;
-                    ev.enviar(Evento::Frase { id, texto: texto.clone() });
-                    let _ = rutas.salida.send((id, texto, cfg.clone()));
+                    *id += 1;
+                    ev.enviar(Evento::Frase { id: *id, texto: texto.clone() });
+                    let _ = rutas.salida.send((*id, texto, cfg.clone()));
                 }
             }
         }
+    };
+
+    // Manda la instrucción armada al agente.
+    let despachar = |instr: &mut Option<EnCurso>, cfg: &Config, id: &mut usize| {
+        let Some(e) = instr.take() else { return };
+        rutas.estado.modo_comando.store(false, std::sync::atomic::Ordering::Relaxed);
+        let _ = rutas.control.send(Control::FinComando);
+        let i = e.texto.trim().to_string();
+        if i.is_empty() {
+            return;
+        }
+        *id += 1;
+        ev.enviar(Evento::Comando { id: *id, instruccion: i.clone() });
+        let _ = rutas.agente.send((*id, i, cfg.clone()));
     };
 
     for orden in rx {
@@ -245,7 +297,12 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                     grabacion.extend_from_slice(&m16);
                 }
                 let s = r.alimentar(&m16);
-                emitir(s, &cfg, &mut punt);
+                emitir(s, &cfg, &mut punt, &mut instr, &mut id);
+                // la instrucción termina tras ~1 s sin voz después de la última frase
+                if instr.as_ref().is_some_and(|e| !e.hablando && e.ultimo.elapsed() >= FIN_INSTRUCCION) {
+                    despachar(&mut instr, &cfg, &mut id);
+                    ultimo_envio = Some(std::time::Instant::now());
+                }
             }
             Orden::Fin => {
                 if grabar && !grabacion.is_empty() {
@@ -254,7 +311,18 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                 }
                 if let Some(r) = rec.as_mut() {
                     let s = r.terminar();
-                    emitir(s, &cfg, &mut punt);
+                    if instr.is_some() {
+                        // se cerró el micrófono a media instrucción: lo último también cuenta
+                        emitir(s, &cfg, &mut punt, &mut instr, &mut id);
+                        despachar(&mut instr, &cfg, &mut id);
+                    } else if ultimo_envio.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3)) {
+                        // restos al cerrar el micrófono tras una instrucción: nunca se teclean
+                        if std::env::var_os("IUREVOZ_LOG").is_some() {
+                            eprintln!("[iurevoz] asr: se descartan restos tras la instrucción");
+                        }
+                    } else {
+                        emitir(s, &cfg, &mut punt, &mut instr, &mut id);
+                    }
                 }
                 punt.reiniciar();
                 if let Some((_, rs)) = &remuestreo {
@@ -313,8 +381,18 @@ fn cargar(cfg: &Config, ev: &Emisor) -> Option<Reconocedor> {
     }
 }
 
+/// Turnos que se recuerdan y cuánto dura la conversación sin actividad.
+const MEMORIA_TURNOS: usize = 6;
+const MEMORIA_DURA: std::time::Duration = std::time::Duration::from_secs(180);
+
 fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, voz: Option<Voz>, control: Sender<Control>, ev: Emisor) {
+    let mut historial: Vec<serde_json::Value> = Vec::new();
+    let mut ultima = std::time::Instant::now();
     for (id, instruccion, cfg) in rx {
+        if ultima.elapsed() > MEMORIA_DURA {
+            historial.clear(); // conversación nueva
+        }
+        ultima = std::time::Instant::now();
         let voz_resp = voz.clone().filter(|_| cfg.voz.responder);
         // «Claude, …»: directo a Claude Code, sin pasar por el modelo local
         if cfg.comandos.claude {
@@ -341,7 +419,7 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
                 }
             }));
         }
-        let r = ag.ejecutar(&instruccion, |accion| ev.enviar(Evento::Accion { id, texto: accion.to_string() }));
+        let r = ag.ejecutar(&instruccion, &historial, |accion| ev.enviar(Evento::Accion { id, texto: accion.to_string() }));
         match r {
             Ok(inf) => {
                 if let Some(v) = &voz_resp {
@@ -349,6 +427,17 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
                         v.decir(inf.respuesta.clone());
                     }
                 }
+                // se recuerda lo pedido, lo hecho y lo respondido
+                let hecho = if inf.acciones.is_empty() { String::new() } else { format!(" [acciones: {}]", inf.acciones.join("; ")) };
+                historial.push(serde_json::json!({"role": "user", "content": instruccion}));
+                historial.push(serde_json::json!({"role": "assistant", "content": format!("{}{hecho}", inf.respuesta)}));
+                let sobran = historial.len().saturating_sub(MEMORIA_TURNOS * 2);
+                historial.drain(..sobran);
+                // si el asistente preguntó algo, se queda escuchando la respuesta
+                if inf.respuesta.trim_end().ends_with('?') {
+                    let _ = control.send(Control::Seguir);
+                }
+                ultima = std::time::Instant::now();
                 ev.enviar(Evento::Respuesta { id, texto: inf.respuesta });
             }
             Err(e) => {
@@ -438,6 +527,13 @@ fn hilo_salida(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, ev
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn instruccion_en_varias_frases() {
+        let mut e = EnCurso::new("¿Cuánto es el quince por ciento?");
+        e.agregar("de 200");
+        assert_eq!(e.texto, "¿Cuánto es el quince por ciento de 200");
+    }
 
     #[test]
     fn respuestas_y_claude() {

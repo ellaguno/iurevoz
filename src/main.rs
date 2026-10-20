@@ -78,8 +78,16 @@ fn main() -> Result<()> {
             });
             let t = Instant::now();
             let ag = agente::Agente::new(cfg.comandos.llm.clone(), Some(portal), voz.clone());
-            let inf = ag.ejecutar(&instruccion, |a| println!("  · {a}"))?;
-            println!("{}  ({:.1} s)", inf.respuesta, t.elapsed().as_secs_f32());
+            // «a ;; b»: varias instrucciones seguidas, con memoria, para probar la continuidad
+            let mut historial = Vec::new();
+            let mut inf = agente::Informe::default();
+            for i in instruccion.split(";;").map(str::trim).filter(|i| !i.is_empty()) {
+                println!("> {i}");
+                inf = ag.ejecutar(i, &historial, |a| println!("  · {a}"))?;
+                println!("{}  ({:.1} s)", inf.respuesta, t.elapsed().as_secs_f32());
+                historial.push(serde_json::json!({"role": "user", "content": i}));
+                historial.push(serde_json::json!({"role": "assistant", "content": inf.respuesta.clone()}));
+            }
             if let Some(v) = voz {
                 v.decir(inf.respuesta);
                 // espera a que termine de hablar
