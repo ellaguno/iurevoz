@@ -50,7 +50,9 @@ sin markdown, porque se lee en voz alta."
 fn sistema_iure() -> String {
     format!(
         "Eres el ayudante de IureVoz para consultar la instancia web de Iurefficient de quien te habla: \
-proyectos y expedientes, sus tareas, vencimientos y documentos. Las herramientas son de solo lectura. \
+proyectos y expedientes, sus tareas, vencimientos y documentos, y su día: sus tareas (mis_tareas), su agenda, \
+sus notificaciones, sus horas registradas (mis_horas) y clientes (buscar_cliente). Las herramientas son de solo lectura. \
+Para «qué tengo hoy» combina mis_tareas y agenda. \
 Para hablar de un proyecto por su nombre, búscalo primero (listar_proyectos con búsqueda) y usa su id. \
 Si piden abrir o ver algo en Iurefficient, usa abrir_en_iurefficient. \
 Responde en español, breve (dos o tres frases), sin markdown ni listas largas, porque se lee en voz alta; \
@@ -178,8 +180,16 @@ pub fn es_de_iurefficient(instruccion: &str) -> bool {
     const CLAVES: &[&str] = &[
         "proyecto", "tarea", "pendiente", "vencimiento", "vence", "plazo", "agenda", "iurefficient", "expediente",
         "cómo va", "como va", "avance",
+        // «mi día» (F2): tareas, agenda, avisos, horas y clientes de quien habla
+        "qué tengo", "que tengo", "reunión", "reunion", "junta", "audiencia", "calendario", "notificaci", "aviso",
+        "horas llevo", "mis horas", "horas registr", "hoja de horas", "cliente",
     ];
-    !pide_web(&t) && CLAVES.iter().any(|c| t.contains(c)) && !PALABRAS_ARCHIVO.iter().any(|c| t.contains(c))
+    // «graba la junta», «qué tengo en Descargas»: eso es de las apps de escritorio
+    const DE_ESCRITORIO: &[&str] = &["graba", "descargas", "documentos", "escritorio"];
+    !pide_web(&t)
+        && CLAVES.iter().any(|c| t.contains(c))
+        && !PALABRAS_ARCHIVO.iter().any(|c| t.contains(c))
+        && !DE_ESCRITORIO.iter().any(|c| t.contains(c))
 }
 
 /// ¿Pidió explícitamente internet? Sin esto, buscar_web y leer_pagina no se ejecutan.
@@ -616,6 +626,15 @@ mod pruebas {
         assert!(!es_de_iurefficient("¿qué archivos hay en el expediente de Heralva?"));
         assert!(es_de_la_suite("¿qué archivos hay en el expediente de Heralva?"));
         assert!(!es_de_iurefficient("abre la calculadora"));
+        // «mi día» (F2)
+        assert!(es_de_iurefficient("¿qué tengo hoy?"));
+        assert!(es_de_iurefficient("¿cuántas horas llevo esta semana?"));
+        assert!(es_de_iurefficient("¿tengo notificaciones nuevas?"));
+        assert!(es_de_iurefficient("¿qué reuniones tengo mañana?"));
+        assert!(es_de_iurefficient("busca al cliente Heralva"));
+        assert!(!es_de_iurefficient("graba la junta con Pérez"));
+        assert!(es_de_la_suite("graba la junta con Pérez"));
+        assert!(!es_de_iurefficient("¿qué tengo en Descargas?"));
     }
 
     #[test]
