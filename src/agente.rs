@@ -19,8 +19,9 @@ fn sistema() -> String {
         "Eres IureVoz, un asistente que controla el escritorio Linux (GNOME) de quien te habla. \
 La instrucción viene de un reconocedor de voz y puede tener errores: interpreta la intención. \
 Usa SOLO las herramientas disponibles; si algo no se puede hacer con ellas, dilo. \
-Si la instrucción menciona archivos, documentos, expedientes, clientes, carpetas, PDF, escritos, grabaciones, \
-juntas, transcripciones o el editor, usa expedientes_y_apps (son archivos de este equipo, nunca de internet). \
+Si la instrucción menciona archivos, carpetas, PDF, escritos, grabaciones, juntas, transcripciones o el editor, \
+usa expedientes_y_apps (son archivos de este equipo, nunca de internet). Para proyectos, tareas, vencimientos o \
+expedientes en Iurefficient usa consultar_iurefficient. \
 Nunca inventes URLs, cifras ni resultados: solo cuenta lo que devolvió una herramienta. \
 Si la instrucción suena a abrir algo (aunque esté mal escrita, p. ej. «apre» o «habre»), usa abrir_aplicacion. \
 Nunca digas que hiciste o harás algo sin haber llamado la herramienta correspondiente. \
@@ -44,6 +45,27 @@ archivos de los expedientes), IureOCR (PDF), IureTranscribe (grabar y transcribi
 archivo y resume tú en dos o tres frases. Nunca inventes rutas ni resultados. Responde en español, breve, \
 sin markdown, porque se lee en voz alta."
         .to_string()
+}
+
+fn sistema_iure() -> String {
+    format!(
+        "Eres el ayudante de IureVoz para consultar la instancia web de Iurefficient de quien te habla: \
+proyectos y expedientes, sus tareas, vencimientos y documentos. Las herramientas son de solo lectura. \
+Para hablar de un proyecto por su nombre, búscalo primero (listar_proyectos con búsqueda) y usa su id. \
+Responde en español, breve (dos o tres frases), sin markdown ni listas largas, porque se lee en voz alta; \
+resume y da lo más importante primero (fechas próximas, pendientes). Nunca inventes datos. Hoy es {}.",
+        esc::hora_fecha().rsplit_once(',').map_or_else(|| esc::hora_fecha(), |(f, _)| f.to_string())
+    )
+}
+
+/// Sub-agentes: el principal delega para no cargar a los modelos chicos con todas las herramientas.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Modo {
+    Principal,
+    /// Apps de escritorio de la suite (archivos, PDF, grabaciones, editor).
+    Suite,
+    /// Instancia web de Iurefficient por su servidor MCP.
+    Iure,
 }
 
 /// Herramientas del sub-agente de la suite.
@@ -118,12 +140,25 @@ pub type Delegar = Box<dyn Fn(&str) -> Result<String> + Send + Sync>;
 pub fn es_de_la_suite(instruccion: &str) -> bool {
     let t = instruccion.to_lowercase();
     const CLAVES: &[&str] = &[
-        "archivo", "documento", "expediente", "carpeta", "pdf", "escrito", "contrato", "grabaci", "grabar",
+        "archivo", "documento", "carpeta", "pdf", "escrito", "contrato", "grabaci", "grabar",
         "graba ", "junta", "reunión", "reunion", "transcrib", "transcripc", "editor", "iuredav", "iureocr",
         "iuretranscribe", "iureditor", "ocr", "unidad", "página ", "páginas",
     ];
     let web = pide_web(&t);
     !web && CLAVES.iter().any(|c| t.contains(c))
+}
+
+/// Palabras que indican archivos locales (IureDav, PDF…) y no la instancia web.
+const PALABRAS_ARCHIVO: &[&str] = &["archivo", "carpeta", "pdf", "grabaci", "transcrip", "editor", "ocr", "unidad", "página"];
+
+/// ¿La instrucción es sobre la instancia web (proyectos, tareas, vencimientos, expedientes)?
+pub fn es_de_iurefficient(instruccion: &str) -> bool {
+    let t = instruccion.to_lowercase();
+    const CLAVES: &[&str] = &[
+        "proyecto", "tarea", "pendiente", "vencimiento", "vence", "plazo", "agenda", "iurefficient", "expediente",
+        "cómo va", "como va", "avance",
+    ];
+    !pide_web(&t) && CLAVES.iter().any(|c| t.contains(c)) && !PALABRAS_ARCHIVO.iter().any(|c| t.contains(c))
 }
 
 /// ¿Pidió explícitamente internet? Sin esto, buscar_web y leer_pagina no se ejecutan.
@@ -143,8 +178,7 @@ pub struct Agente {
     voz: Option<Voz>,
     delegar: Option<Delegar>,
     ganchos: Option<Arc<Ganchos>>,
-    /// Sub-agente de las apps de la suite (otro prompt y otras herramientas).
-    suite: bool,
+    modo: Modo,
 }
 
 /// Lo que pasó al ejecutar una instrucción.
@@ -157,7 +191,7 @@ pub struct Informe {
 impl Agente {
     pub fn new(cfg: LlmCfg, portal: Option<Portal>, voz: Option<Voz>) -> Self {
         let agente = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(120))).build().into();
-        Self { instruccion: Default::default(), cfg, agente, portal, voz, delegar: None, ganchos: None, suite: false }
+        Self { instruccion: Default::default(), cfg, agente, portal, voz, delegar: None, ganchos: None, modo: Modo::Principal }
     }
 
     pub fn con_ganchos(mut self, g: Arc<Ganchos>) -> Self {
@@ -166,11 +200,20 @@ impl Agente {
     }
 
     fn definiciones(&self) -> Value {
-        if self.suite { herramientas_suite() } else { herramientas(self.delegar.is_some()) }
+        match self.modo {
+            Modo::Principal => herramientas(self.delegar.is_some()),
+            Modo::Suite => herramientas_suite(),
+            // si no está conectado, sin herramientas: el modelo lo dirá con el error de abajo
+            Modo::Iure => crate::iure::herramientas().unwrap_or_else(|_| json!([])),
+        }
     }
 
     fn prompt(&self) -> String {
-        if self.suite { sistema_suite() } else { sistema() }
+        match self.modo {
+            Modo::Principal => sistema(),
+            Modo::Suite => sistema_suite(),
+            Modo::Iure => sistema_iure(),
+        }
     }
 
     pub fn con_claude(mut self, delegar: Delegar) -> Self {
@@ -195,12 +238,25 @@ impl Agente {
     /// `historial`: turnos recientes (usuario/asistente) para dar continuidad a la conversación.
     pub fn ejecutar(&self, instruccion: &str, historial: &[Value], mut paso: impl FnMut(&str)) -> Result<Informe> {
         *self.instruccion.lock().unwrap() = instruccion.to_string();
-        // archivos y apps de la suite: directo al sub-agente, sin pasar por el modelo principal
-        if !self.suite && es_de_la_suite(instruccion) {
-            let texto = self.herramienta("expedientes_y_apps", &json!({"pedido": instruccion}))?;
-            paso(&format!("expedientes_y_apps → {}", texto.chars().take(160).collect::<String>()));
+        // instancia web o apps de la suite: directo al sub-agente, sin pasar por el modelo principal
+        let directo = if self.modo != Modo::Principal {
+            None
+        } else if es_de_iurefficient(instruccion) {
+            Some("consultar_iurefficient")
+        } else if es_de_la_suite(instruccion) {
+            Some("expedientes_y_apps")
+        } else {
+            None
+        };
+        if let Some(h) = directo {
+            let texto = self.herramienta(h, &json!({"pedido": instruccion}))?;
+            paso(&format!("{h} → {}", texto.chars().take(160).collect::<String>()));
             let respuesta = texto.split(" (hice: ").next().unwrap_or(&texto).trim().to_string();
-            return Ok(Informe { acciones: vec![format!("expedientes_y_apps({})", args_cortos(&json!({"pedido": instruccion})))], respuesta });
+            return Ok(Informe { acciones: vec![format!("{h}({})", args_cortos(&json!({"pedido": instruccion})))], respuesta });
+        }
+        if self.modo == Modo::Iure {
+            // sin conexión no tiene sentido llamar al modelo
+            crate::iure::herramientas()?;
         }
         let mut inf = Informe::default();
         let mut ultimo = String::new();
@@ -290,12 +346,20 @@ impl Agente {
             "expedientes_y_apps" => {
                 // sub-agente con las herramientas de la suite: el prompt principal no crece
                 let mut sub = Agente::new(self.cfg.clone(), None, self.voz.clone());
-                sub.suite = true;
+                sub.modo = Modo::Suite;
                 sub.ganchos = self.ganchos.clone();
                 let inf = sub.ejecutar(&s("pedido")?, &[], |_| {})?;
                 let hecho = if inf.acciones.is_empty() { String::new() } else { format!(" (hice: {})", inf.acciones.join("; ")) };
                 Ok(format!("{}{hecho}", inf.respuesta))
             }
+            "consultar_iurefficient" => {
+                let mut sub = Agente::new(self.cfg.clone(), None, self.voz.clone());
+                sub.modo = Modo::Iure;
+                let inf = sub.ejecutar(&s("pedido")?, &[], |_| {})?;
+                let hecho = if inf.acciones.is_empty() { String::new() } else { format!(" (hice: {})", inf.acciones.join("; ")) };
+                Ok(format!("{}{hecho}", inf.respuesta))
+            }
+            n if self.modo == Modo::Iure && crate::iure::es_herramienta(n) => crate::iure::llamar(n, a.clone()),
             "archivos" => crate::suite::archivos(a["carpeta"].as_str(), a["buscar"].as_str()),
             "abrir_archivo" => crate::suite::abrir(&s("ruta")?, a["con_editor"].as_bool().unwrap_or(false)),
             "nuevo_documento" => crate::suite::nuevo_documento(),
@@ -495,6 +559,16 @@ fn args_cortos(a: &Value) -> String {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn enrutamiento_iurefficient() {
+        assert!(es_de_iurefficient("¿qué tareas tengo pendientes?"));
+        assert!(es_de_iurefficient("¿cómo va el expediente de Heralva?"));
+        assert!(es_de_iurefficient("¿qué vence esta semana?"));
+        assert!(!es_de_iurefficient("¿qué archivos hay en el expediente de Heralva?"));
+        assert!(es_de_la_suite("¿qué archivos hay en el expediente de Heralva?"));
+        assert!(!es_de_iurefficient("abre la calculadora"));
+    }
 
     #[test]
     fn enrutamiento_por_palabras() {

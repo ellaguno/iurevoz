@@ -11,6 +11,7 @@ mod correccion;
 mod detector;
 mod entrenamiento;
 mod escritorio;
+mod iure;
 mod llm_local;
 mod modelos;
 mod motor;
@@ -44,6 +45,7 @@ Uso:
   iurevoz entrenar-palabra [frase]  entrena el detector dedicado de la palabra clave
   iurevoz vigilia A.wav         simula «siempre escuchando» con un archivo
   iurevoz preparar-llm [modelo] descarga llama.cpp y el modelo local (gemma4-e2b, qwen3.5-4b, qwen3.5-2b)
+  iurevoz conectar-iurefficient crea el token de IureVoz con la sesión de la suite
   iurevoz decir \"texto\" [--voz CLAVE] [--guardar A.wav]
                                 habla con la voz local (claves: piper-ald, piper-claude,
                                 piper-daniela, kokoro-dora, kokoro-alex, supertonic)
@@ -77,6 +79,7 @@ fn main() -> Result<()> {
             println!("llama-server listo en {:.1} s: {url}", t.elapsed().as_secs_f32());
             llm_local::apagar();
         }
+        Some("conectar-iurefficient") => println!("{}", iure::conectar()?),
         Some("instalar-atajos") => println!("{}", atajos_gnome::instalar()?),
         Some("comando") if args.len() == 1 => {
             if !control::enviar_a_instancia("comando") {

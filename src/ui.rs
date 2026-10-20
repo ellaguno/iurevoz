@@ -59,6 +59,9 @@ pub struct App {
     esperando_comando: bool,
     /// Los atajos personalizados de GNOME ya existen.
     atajos_gnome: bool,
+    estado_iure: Option<(std::time::Instant, crate::iure::Estado)>,
+    /// Formulario para entrar a Iurefficient: (contraseña, código, pide código, visible).
+    entrada_iure: (String, String, bool, bool),
     /// Mensajes del entrenamiento del detector en curso.
     entrenando: Option<crossbeam_channel::Receiver<Result<String, String>>>,
     progreso_entrenamiento: String,
@@ -87,6 +90,8 @@ impl App {
             voz,
             esperando_comando: false,
             atajos_gnome: crate::atajos_gnome::instalados(),
+            estado_iure: None,
+            entrada_iure: Default::default(),
             entrenando: None,
             progreso_entrenamiento: String::new(),
             prueba: PruebaTeclado::default(),
@@ -623,16 +628,72 @@ impl App {
                 ui.label(RichText::new(format!("Unidad «{}» en {} · {estado}", m.name, m.mount_point)).small());
             }
             ui.add_space(4.0);
-            match account::active() {
-                Some(c) => {
-                    ui.label(RichText::new(format!("Cuenta de la suite: {} en {} (guardada por {})", c.email, c.domain, c.app)).small());
-                    ui.label(
-                        RichText::new("Consultar proyectos, tareas y agenda de la instancia aún no está disponible (fases F0–F1 del plan).")
-                            .small()
-                            .weak(),
-                    );
+            if let Some(c) = account::active() {
+                ui.label(RichText::new(format!("Cuenta de la suite: {} en {} (guardada por {})", c.email, c.domain, c.app)).small());
+            }
+            // el estado se consulta al llavero: se guarda un rato para no hacerlo en cada cuadro
+            if self.estado_iure.as_ref().is_none_or(|(t, _)| t.elapsed() > std::time::Duration::from_secs(10)) {
+                self.estado_iure = Some((std::time::Instant::now(), crate::iure::estado()));
+            }
+            use crate::iure::Estado;
+            match self.estado_iure.as_ref().map(|(_, e)| e.clone()) {
+                Some(Estado::Conectado(q)) => drop(ui.label(RichText::new(format!("✔ IureVoz conectado a la instancia ({q})")).color(verde))),
+                Some(Estado::PorConectar(q)) if !self.entrada_iure.3 => {
+                    ui.horizontal(|ui| {
+                        if ui.button("Conectar IureVoz").on_hover_text("Crea un token de solo lectura «IureVoz» (un año, revocable en Iurefficient)").clicked() {
+                            match crate::iure::conectar() {
+                                Ok(m) => self.estado = m,
+                                Err(e) => {
+                                    // sesión vencida: se ofrece entrar con contraseña
+                                    self.error = Some(format!("{e:#}"));
+                                    self.entrada_iure.3 = true;
+                                }
+                            }
+                            self.estado_iure = None;
+                        }
+                        ui.label(RichText::new(format!("con la sesión de la suite ({q})")).small());
+                    });
                 }
-                None => drop(ui.label(RichText::new("Sin cuenta de Iurefficient en este equipo: entra desde IureTranscribe o IureDav.").small())),
+                Some(Estado::PorConectar(q) | Estado::SinCredenciales(q)) => {
+                    ui.label(RichText::new(format!("Entra a Iurefficient ({q}). La contraseña no se guarda; IureVoz crea un token de solo lectura.")).small());
+                    let (clave, codigo, pide_codigo, _) = &mut self.entrada_iure;
+                    let mut resultado = None;
+                    ui.horizontal(|ui| {
+                        if !*pide_codigo {
+                            let r = ui.add(egui::TextEdit::singleline(clave).password(true).hint_text("contraseña").desired_width(180.0));
+                            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if (ui.button("Entrar").clicked() || enter) && !clave.is_empty() {
+                                resultado = Some(crate::iure::entrar(clave).map(|e| match e {
+                                    crate::iure::Entrada::Listo(m) => Some(m),
+                                    crate::iure::Entrada::PideCodigo => None,
+                                }));
+                                clave.clear();
+                            }
+                        } else {
+                            let r = ui.add(egui::TextEdit::singleline(codigo).hint_text("código de verificación").desired_width(140.0));
+                            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if (ui.button("Verificar").clicked() || enter) && !codigo.is_empty() {
+                                resultado = Some(crate::iure::verificar_codigo(codigo).map(Some));
+                                codigo.clear();
+                            }
+                        }
+                    });
+                    match resultado {
+                        Some(Ok(Some(m))) => {
+                            self.estado = m;
+                            self.entrada_iure = Default::default();
+                            self.estado_iure = None;
+                            self.error = None;
+                        }
+                        Some(Ok(None)) => self.entrada_iure.2 = true,
+                        Some(Err(e)) => {
+                            self.error = Some(format!("{e:#}"));
+                            self.entrada_iure.2 = false;
+                        }
+                        None => {}
+                    }
+                }
+                _ => drop(ui.label(RichText::new("Sin cuenta de Iurefficient en este equipo: entra desde IureTranscribe o IureDav.").small())),
             }
         });
     }
