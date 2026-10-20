@@ -1,19 +1,22 @@
 //! Orquestación: audio → ASR → puntuación dictada → (corrección LLM) → inyección.
 //!
-//! Dos hilos: el de ASR (latencia crítica, nunca espera a la red) y el de salida,
-//! que corrige e inyecta frase por frase en orden.
+//! Tres hilos: el de ASR (latencia crítica, nunca espera a la red), el de salida, que
+//! corrige e inyecta frase por frase en orden, y el del agente, que atiende instrucciones.
 
 use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use sherpa_onnx::LinearResampler;
 
+use crate::agente::Agente;
 use crate::asr::{Reconocedor, SR, Salida};
+use crate::control::{Control, Estado};
 use crate::config::{Config, Inyeccion};
 use crate::correccion::{Corrector, Resultado};
 use crate::modelos;
 use crate::portal::Portal;
 use crate::puntuacion::Puntuador;
+use crate::voz::Voz;
 
 pub enum Orden {
     Audio { muestras: Vec<f32>, tasa: u32 },
@@ -34,6 +37,13 @@ pub enum Evento {
     Frase { id: usize, texto: String },
     Corregida { id: usize, res: Resultado },
     ErrorCorreccion { id: usize, msg: String },
+    /// Instrucción recibida en modo comando.
+    Comando { id: usize, instruccion: String },
+    /// El modo comando espera la instrucción (se dijo solo el prefijo).
+    EsperandoComando,
+    Accion { id: usize, texto: String },
+    Respuesta { id: usize, texto: String },
+    ErrorComando { id: usize, msg: String },
     Error(String),
 }
 
@@ -45,22 +55,38 @@ pub struct Motor {
 type Notificar = Arc<dyn Fn() + Send + Sync>;
 
 impl Motor {
-    pub fn iniciar(cfg: Config, portal: Option<Portal>, notificar: Notificar) -> Self {
+    pub fn iniciar(
+        cfg: Config,
+        portal: Option<Portal>,
+        voz: Option<Voz>,
+        estado: Estado,
+        control: Sender<Control>,
+        notificar: Notificar,
+    ) -> Self {
         let (tx, rx) = unbounded::<Orden>();
         let (tx_ev, eventos) = unbounded::<Evento>();
         let (tx_sal, rx_sal) = unbounded::<(usize, String, Config)>();
+        let (tx_ag, rx_ag) = unbounded::<(usize, String, Config)>();
 
         let ev = Emisor { tx: tx_ev.clone(), notificar: notificar.clone() };
+        let rutas = Rutas { salida: tx_sal, agente: tx_ag, estado, control };
         std::thread::Builder::new()
             .name("asr".into())
-            .spawn(move || hilo_asr(cfg, rx, tx_sal, ev))
+            .spawn(move || hilo_asr(cfg, rx, rutas, ev))
             .expect("hilo asr");
+
+        let ev = Emisor { tx: tx_ev.clone(), notificar: notificar.clone() };
+        let p = portal.clone();
+        std::thread::Builder::new()
+            .name("salida".into())
+            .spawn(move || hilo_salida(rx_sal, p, ev))
+            .expect("hilo salida");
 
         let ev = Emisor { tx: tx_ev, notificar };
         std::thread::Builder::new()
-            .name("salida".into())
-            .spawn(move || hilo_salida(rx_sal, portal, ev))
-            .expect("hilo salida");
+            .name("agente".into())
+            .spawn(move || hilo_agente(rx_ag, portal, voz, ev))
+            .expect("hilo agente");
 
         Self { tx, eventos }
     }
@@ -82,7 +108,32 @@ impl Emisor {
     }
 }
 
-fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, tx_sal: Sender<(usize, String, Config)>, ev: Emisor) {
+/// A dónde va cada frase final.
+struct Rutas {
+    salida: Sender<(usize, String, Config)>,
+    agente: Sender<(usize, String, Config)>,
+    estado: Estado,
+    control: Sender<Control>,
+}
+
+/// Si la frase empieza con el prefijo («computadora, abre…»), devuelve el resto.
+fn quitar_prefijo(frase: &str, prefijo: &str) -> Option<String> {
+    let norm = |s: &str| crate::correccion::palabras(s);
+    let p = norm(prefijo);
+    let f = norm(frase);
+    if p.is_empty() || f.len() < p.len() || f[..p.len()] != p[..] {
+        return None;
+    }
+    // se corta en el texto original tras tantas palabras como tenga el prefijo
+    let mut resto = frase;
+    for _ in 0..p.len() {
+        resto = resto.trim_start_matches(|c: char| !c.is_alphanumeric());
+        resto = resto.trim_start_matches(char::is_alphanumeric);
+    }
+    Some(resto.trim_start_matches(|c: char| !c.is_alphanumeric()).trim().to_string())
+}
+
+fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
     let mut rec = cargar(&cfg, &ev);
     let mut punt = Puntuador::new();
     let mut remuestreo: Option<(u32, LinearResampler)> = None;
@@ -99,6 +150,27 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, tx_sal: Sender<(usize, String,
                     if std::env::var_os("IUREVOZ_LOG").is_some() {
                         eprintln!("[iurevoz] asr: {t:?}");
                     }
+                    // ¿instrucción en vez de dictado?
+                    let instruccion = if rutas.estado.modo_comando.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        let _ = rutas.control.send(Control::FinComando);
+                        Some(t.clone())
+                    } else if cfg.comandos.activos {
+                        quitar_prefijo(&t, &cfg.comandos.prefijo)
+                    } else {
+                        None
+                    };
+                    if let Some(i) = instruccion {
+                        if i.is_empty() {
+                            // solo se dijo el prefijo: la siguiente frase es la instrucción
+                            rutas.estado.modo_comando.store(true, std::sync::atomic::Ordering::Relaxed);
+                            ev.enviar(Evento::EsperandoComando);
+                        } else {
+                            id += 1;
+                            ev.enviar(Evento::Comando { id, instruccion: i.clone() });
+                            let _ = rutas.agente.send((id, i, cfg.clone()));
+                        }
+                        continue;
+                    }
                     let texto = punt.procesar(&t, cfg.puntuacion_dictada);
                     // «nuevo párrafo» solo produce saltos de línea: no se descarta
                     if texto.is_empty() {
@@ -106,7 +178,7 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, tx_sal: Sender<(usize, String,
                     }
                     id += 1;
                     ev.enviar(Evento::Frase { id, texto: texto.clone() });
-                    let _ = tx_sal.send((id, texto, cfg.clone()));
+                    let _ = rutas.salida.send((id, texto, cfg.clone()));
                 }
             }
         }
@@ -199,6 +271,30 @@ fn cargar(cfg: &Config, ev: &Emisor) -> Option<Reconocedor> {
     }
 }
 
+fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, voz: Option<Voz>, ev: Emisor) {
+    for (id, instruccion, cfg) in rx {
+        let voz_resp = voz.clone().filter(|_| cfg.voz.responder);
+        let ag = Agente::new(cfg.comandos.llm.clone(), portal.clone(), voz.clone());
+        let r = ag.ejecutar(&instruccion, |accion| ev.enviar(Evento::Accion { id, texto: accion.to_string() }));
+        match r {
+            Ok(inf) => {
+                if let Some(v) = &voz_resp {
+                    if !inf.respuesta.is_empty() {
+                        v.decir(inf.respuesta.clone());
+                    }
+                }
+                ev.enviar(Evento::Respuesta { id, texto: inf.respuesta });
+            }
+            Err(e) => {
+                if let Some(v) = &voz_resp {
+                    v.decir("No pude hacerlo.");
+                }
+                ev.enviar(Evento::ErrorComando { id, msg: format!("{e:#}") });
+            }
+        }
+    }
+}
+
 fn hilo_salida(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, ev: Emisor) {
     let mut corrector: Option<(crate::config::Correccion, Corrector)> = None;
     // lo ya entregado, como contexto para la siguiente corrección
@@ -238,5 +334,18 @@ fn hilo_salida(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, ev
                 p.escribir(final_);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    #[test]
+    fn prefijo() {
+        assert_eq!(quitar_prefijo("Computadora, abre la calculadora", "computadora").as_deref(), Some("abre la calculadora"));
+        assert_eq!(quitar_prefijo("computadora", "computadora").as_deref(), Some(""));
+        assert_eq!(quitar_prefijo("La computadora está lenta", "computadora"), None);
+        assert_eq!(quitar_prefijo("Oye Iure, ¿qué hora es?", "oye iure").as_deref(), Some("qué hora es?"));
     }
 }

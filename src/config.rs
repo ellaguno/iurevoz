@@ -81,6 +81,39 @@ impl Correccion {
     }
 }
 
+/// Modo comando: instrucciones habladas que un LLM traduce a acciones de escritorio.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Comandos {
+    pub activos: bool,
+    /// Palabra que, al inicio de una frase dictada, la convierte en instrucción.
+    pub prefijo: String,
+    /// LLM que interpreta (mismos campos que la corrección).
+    pub llm: Correccion,
+}
+
+impl Default for Comandos {
+    fn default() -> Self {
+        Self { activos: true, prefijo: "computadora".into(), llm: Correccion { activa: true, ..Correccion::default() } }
+    }
+}
+
+/// Voz (TTS) local.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VozCfg {
+    /// Responder en voz alta a los comandos.
+    pub responder: bool,
+    pub voz: String,
+    pub velocidad: f32,
+}
+
+impl Default for VozCfg {
+    fn default() -> Self {
+        Self { responder: true, voz: "piper-claude".into(), velocidad: 1.0 }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -91,6 +124,8 @@ pub struct Config {
     pub puntuacion_dictada: bool,
     pub inyeccion: Inyeccion,
     pub correccion: Correccion,
+    pub comandos: Comandos,
+    pub voz: VozCfg,
     /// Token del portal RemoteDesktop para no volver a pedir permiso.
     pub token_portal: Option<String>,
 }
@@ -104,6 +139,8 @@ impl Default for Config {
             puntuacion_dictada: true,
             inyeccion: Inyeccion::Teclear,
             correccion: Correccion::default(),
+            comandos: Comandos::default(),
+            voz: VozCfg::default(),
             token_portal: None,
         }
     }

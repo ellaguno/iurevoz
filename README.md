@@ -9,12 +9,16 @@ cargo build --release
 target/release/iurevoz                 # abre la ventana (la primera vez ofrece bajar los modelos)
 target/release/iurevoz alternar        # empieza/detiene el dictado en la ventana abierta
 target/release/iurevoz transcribir a.wav [--corregir]   # prueba sin interfaz
+target/release/iurevoz comando "abre la calculadora" [--mudo]   # modo comando sin interfaz
+target/release/iurevoz decir "hola" --voz piper-claude  # voz local
 ```
 
 - **Dictar**: botón, F9 con la ventana enfocada, o el atajo global (GNOME pide asignarlo la primera vez; se sugiere Ctrl+Alt+Espacio). También sirve un atajo propio de GNOME que ejecute `iurevoz alternar`.
 - **Texto en la ventana activa**: se teclea vía el portal RemoteDesktop de GNOME. La primera vez GNOME pide permiso y se recuerda. En *Ajustes → Probar escritura* se verifica que lleguen acentos, «ñ», «¿?» y comillas.
 - **Puntuación dictada**: «coma», «punto», «punto y coma», «dos puntos», «punto y aparte», «dos puntos y aparte», «nueva línea» (o «nuevo/otro renglón», «cambio de renglón», «salto de línea»), «nuevo párrafo», «abre/cierra interrogación», «abre/cierra exclamación», «abre/cierra paréntesis», «abre/cierra comillas», «puntos suspensivos», «viñeta» (salto de línea + «- », que Docs y Word convierten en lista), «viñeta numerada» (salto + «1. », «2. »…; el contador vuelve a 1 en cada párrafo). También se aceptan variantes que el ASR produce, como «punto y seguida» o «punto ya parte». «Punto» y «coma» después de un artículo, preposición u ordinal («el punto de vista», «en coma», «segundo punto») se dejan como palabra.
 - **Corrección con LLM** (Ajustes, apagada por omisión): Ollama local, OpenRouter u otro servidor OpenAI-compatible. La API key se toma de `OPENROUTER_API_KEY` o se guarda en `~/.config/iurevoz/config.toml` (permisos 600).
+- **Modo comando** (lista cerrada de herramientas, sin shell): botón «Comando», atajo global (se sugiere Ctrl+Alt+C), `iurevoz comando`, o empezar la frase con el prefijo hablado («computadora, abre la calculadora»; decir solo «computadora» deja escuchando la siguiente frase). Un LLM (Gemma 4 E2B local por omisión) elige entre: abrir aplicación, abrir URL, buscar en la web, abrir carpeta de la carpeta personal, calcular, atajos de teclado en la ventana activa, escribir texto, volumen, fecha y hora, leer la selección y leer una página web. Responde en voz alta.
+- **Voz (TTS) local**: Piper (México y Argentina), Kokoro y Supertonic 3 vía sherpa-onnx; se elige en Ajustes. Botón «Leer» o atajo (Ctrl+Alt+L) lee el texto seleccionado; pulsarlo de nuevo calla. Mientras la app habla, el micrófono oye silencio para no transcribirse a sí misma.
 - Modelos en `~/.local/share/iurevoz/modelos`; también reutiliza los que bajó el benchmark en `~/.cache/stt-bench/models`.
 - `IUREVOZ_LOG=1` imprime lo que entrega el ASR, las frases, correcciones y estados en la terminal. `IUREVOZ_GRABAR=1` guarda el audio de cada dictado en `~/.local/share/iurevoz/depuracion/` (solo local).
 
@@ -32,7 +36,10 @@ cpal (16 kHz mono) ─▶ hilo control ─▶ hilo ASR ────────�
 | `puntuacion` | comandos de puntuación dictada, mayúsculas y espacios entre frases |
 | `correccion` | LLM por frase con contexto, texto delimitado (no se obedece) y salvaguarda de cambios |
 | `teclas` | lee la distribución de GNOME con xkbcommon; acentos sin tecla propia → tecla muerta + letra |
-| `portal` | RemoteDesktop (teclear) y GlobalShortcuts (atajo) con ashpd |
+| `portal` | RemoteDesktop (teclear y combinaciones de teclas) y GlobalShortcuts (dictar, comando, leer) con ashpd |
+| `agente` | modo comando: LLM con *tool calling* (Ollama u OpenAI-compatible), hasta 5 pasos |
+| `escritorio` | herramientas permitidas: apps (.desktop + gettext + sinónimos), URLs, carpetas, calculadora, teclas, volumen, lectura |
+| `voz` | TTS local con sherpa-onnx y reproducción con cpal, oración por oración e interrumpible |
 | `control` | micrófono y órdenes en un hilo propio: en Wayland la ventana no corre si está oculta |
 | `motor` | hilos de ASR (latencia crítica) y de salida (corrige e inyecta en orden) |
 
@@ -115,4 +122,7 @@ Lección: el texto dictado va delimitado y con la instrucción explícita de no 
 - [x] Benchmark de corrección local → [`bench/correccion.py`](bench/correccion.py)
 - [x] Corrección: modelos locales nuevos y OpenRouter
 - [x] App en Rust con GUI: dictado → puntuación → corrección → teclear en la ventana activa
-- [ ] Modo comando con LLM + MCP
+- [x] Modo comando local con herramientas en lista blanca (sin shell)
+- [x] Voz local: respuestas habladas y lectura de selección o páginas
+- [ ] Etapa 2: OpenRouter para comandos y Claude Code (cuenta del usuario) para instrucciones que sí toquen el sistema, con confirmación
+- [ ] Cliente MCP de las apps del suite

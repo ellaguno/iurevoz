@@ -14,29 +14,39 @@ use tokio::sync::mpsc;
 
 use crate::config::APP_ID;
 
-pub const ATAJO_ID: &str = "dictar";
-const ATAJO_PREFERIDO: &str = "<Control><Alt>space";
+/// Atajos globales: (id, descripción, combinación sugerida). GNOME deja cambiarlos.
+pub const ATAJOS: &[(&str, &str, &str)] = &[
+    ("dictar", "Dictar / detener", "<Control><Alt>space"),
+    ("comando", "Dar una instrucción", "<Control><Alt>c"),
+    ("leer", "Leer la selección en voz alta / callar", "<Control><Alt>l"),
+];
 
 #[derive(Debug)]
 pub enum Aviso {
-    /// El atajo global se activó (pulsado) o se soltó.
-    Atajo { pulsado: bool },
-    /// Descripción del atajo asignado por el usuario en GNOME.
-    AtajoAsignado(String),
+    /// Un atajo global se activó (pulsado) o se soltó.
+    Atajo { id: String, pulsado: bool },
+    /// (id, combinación asignada por el usuario en GNOME).
+    AtajoAsignado(String, String),
     /// Token para que el permiso de teclear no se vuelva a pedir.
     TokenTeclado(String),
     Error(String),
 }
 
+enum Pedido {
+    Escribir(String),
+    /// Combinación: se pulsan en orden y se sueltan al revés.
+    Teclas(Vec<u32>),
+}
+
 #[derive(Clone)]
 pub struct Portal {
-    tx: mpsc::UnboundedSender<String>,
+    tx: mpsc::UnboundedSender<Pedido>,
 }
 
 impl Portal {
     /// Arranca el hilo de portales. `avisar` recibe los eventos para la interfaz.
     pub fn iniciar(token: Option<String>, atajo: bool, avisar: impl Fn(Aviso) + Send + Sync + 'static) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel::<String>();
+        let (tx, rx) = mpsc::unbounded_channel::<Pedido>();
         std::thread::Builder::new()
             .name("portal".into())
             .spawn(move || {
@@ -68,24 +78,29 @@ impl Portal {
 
     /// Encola texto para teclear en la ventana activa.
     pub fn escribir(&self, texto: String) {
-        let _ = self.tx.send(texto);
+        let _ = self.tx.send(Pedido::Escribir(texto));
+    }
+
+    /// Pulsa una combinación de teclas (keysyms) en la ventana activa.
+    pub fn teclas(&self, keysyms: Vec<u32>) {
+        let _ = self.tx.send(Pedido::Teclas(keysyms));
     }
 }
 
 async fn atajo_global(avisar: &(dyn Fn(Aviso) + Send + Sync)) -> Result<()> {
     let gs = GlobalShortcuts::new().await?;
     let sesion = gs.create_session(Default::default()).await?;
-    let atajos = [NewShortcut::new(ATAJO_ID, "Dictar / detener").preferred_trigger(ATAJO_PREFERIDO)];
+    let atajos: Vec<NewShortcut> = ATAJOS.iter().map(|(id, d, t)| NewShortcut::new(*id, *d).preferred_trigger(*t)).collect();
     let r = gs.bind_shortcuts(&sesion, &atajos, None, Default::default()).await?.response()?;
-    if let Some(s) = r.shortcuts().iter().find(|s| s.id() == ATAJO_ID) {
-        avisar(Aviso::AtajoAsignado(s.trigger_description().to_string()));
+    for s in r.shortcuts() {
+        avisar(Aviso::AtajoAsignado(s.id().to_string(), s.trigger_description().to_string()));
     }
     let mut act = gs.receive_activated().await?;
     let mut desact = gs.receive_deactivated().await?;
     loop {
         tokio::select! {
-            Some(a) = act.next() => if a.shortcut_id() == ATAJO_ID { avisar(Aviso::Atajo { pulsado: true }) },
-            Some(d) = desact.next() => if d.shortcut_id() == ATAJO_ID { avisar(Aviso::Atajo { pulsado: false }) },
+            Some(a) = act.next() => avisar(Aviso::Atajo { id: a.shortcut_id().to_string(), pulsado: true }),
+            Some(d) = desact.next() => avisar(Aviso::Atajo { id: d.shortcut_id().to_string(), pulsado: false }),
             else => break,
         }
     }
@@ -116,9 +131,9 @@ async fn abrir_teclado(token: Option<&str>, avisar: &(dyn Fn(Aviso) + Send + Syn
     Ok(Teclado { rd, sesion, teclas: crate::teclas::Teclas::de_gnome() })
 }
 
-async fn teclado(mut rx: mpsc::UnboundedReceiver<String>, mut token: Option<String>, avisar: &(dyn Fn(Aviso) + Send + Sync)) {
+async fn teclado(mut rx: mpsc::UnboundedReceiver<Pedido>, mut token: Option<String>, avisar: &(dyn Fn(Aviso) + Send + Sync)) {
     let mut tec: Option<Teclado> = None;
-    while let Some(texto) = rx.recv().await {
+    while let Some(pedido) = rx.recv().await {
         if tec.is_none() {
             match abrir_teclado(token.as_deref(), avisar).await {
                 Ok(t) => tec = Some(t),
@@ -130,11 +145,26 @@ async fn teclado(mut rx: mpsc::UnboundedReceiver<String>, mut token: Option<Stri
             }
         }
         let t = tec.as_ref().unwrap();
-        if let Err(e) = teclear(t, &texto).await {
+        let r = match &pedido {
+            Pedido::Escribir(texto) => teclear(t, texto).await,
+            Pedido::Teclas(ks) => combinacion(t, ks).await,
+        };
+        if let Err(e) = r {
             avisar(Aviso::Error(format!("al teclear: {e:#}")));
             tec = None; // la sesión pudo cerrarse (permiso revocado): se reabre la próxima vez
         }
     }
+}
+
+async fn combinacion(t: &Teclado, ks: &[u32]) -> Result<()> {
+    for &k in ks {
+        t.rd.notify_keyboard_keysym(&t.sesion, k as i32, KeyState::Pressed, Default::default()).await?;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    for &k in ks.iter().rev() {
+        t.rd.notify_keyboard_keysym(&t.sesion, k as i32, KeyState::Released, Default::default()).await?;
+    }
+    Ok(())
 }
 
 async fn teclear(t: &Teclado, texto: &str) -> Result<()> {

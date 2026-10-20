@@ -1,16 +1,19 @@
 //! iurevoz: dictado por voz local para Linux.
 
+mod agente;
 mod asr;
 mod audio;
 mod config;
 mod control;
 mod correccion;
+mod escritorio;
 mod modelos;
 mod motor;
 mod portal;
 mod puntuacion;
 mod teclas;
 mod ui;
+mod voz;
 
 use std::time::Instant;
 
@@ -26,6 +29,11 @@ Uso:
   iurevoz alternar              empieza/detiene el dictado en la instancia abierta
   iurevoz transcribir A.wav [--corregir]
                                 prueba sin interfaz: ASR + puntuación (+ corrección)
+  iurevoz comando \"instrucción\"   ejecuta una instrucción sin interfaz (prueba del modo comando)
+  iurevoz leer | callar         lee la selección en voz alta en la instancia abierta
+  iurevoz decir \"texto\" [--voz CLAVE] [--guardar A.wav]
+                                habla con la voz local (claves: piper-ald, piper-claude,
+                                piper-daniela, kokoro-dora, kokoro-alex, supertonic)
   iurevoz --sin-portal          abre la ventana sin teclear ni atajo global
 ";
 
@@ -33,9 +41,63 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("-h" | "--help" | "ayuda") => print!("{AYUDA}"),
-        Some("alternar") => {
-            if !control::enviar_a_instancia("alternar") {
+        Some(o @ ("alternar" | "leer" | "callar")) if args.len() == 1 => {
+            if !control::enviar_a_instancia(o) {
                 bail!("iurevoz no está abierto");
+            }
+        }
+        Some("comando") if args.len() == 1 => {
+            if !control::enviar_a_instancia("comando") {
+                bail!("iurevoz no está abierto");
+            }
+        }
+        Some("comando") => {
+            let cfg = Config::cargar();
+            let mudo = args.iter().any(|a| a == "--mudo");
+            let instruccion = args[1..].iter().filter(|a| *a != "--mudo").cloned().collect::<Vec<_>>().join(" ");
+            let voz = (cfg.voz.responder && !mudo).then(|| voz::Voz::iniciar(cfg.voz.voz.clone(), cfg.voz.velocidad, |m| eprintln!("{m}")));
+            let portal = portal::Portal::iniciar(cfg.token_portal.clone(), false, |a| {
+                if let portal::Aviso::TokenTeclado(t) = a {
+                    let mut c = Config::cargar();
+                    c.token_portal = Some(t);
+                    let _ = c.guardar();
+                }
+            });
+            let t = Instant::now();
+            let ag = agente::Agente::new(cfg.comandos.llm.clone(), Some(portal), voz.clone());
+            let inf = ag.ejecutar(&instruccion, |a| println!("  · {a}"))?;
+            println!("{}  ({:.1} s)", inf.respuesta, t.elapsed().as_secs_f32());
+            if let Some(v) = voz {
+                v.decir(inf.respuesta);
+                // espera a que termine de hablar
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                while v.hablando.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+            // da tiempo a que el portal termine de teclear
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        Some("decir") => {
+            let texto = args.get(1).context("falta el texto")?;
+            let opt = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
+            let clave = opt("--voz").unwrap_or_else(|| "piper-ald".into());
+            if voz::falta(&clave).is_some() {
+                eprintln!("Descargando la voz {clave}…");
+                voz::descargar(&clave, |f| eprint!("\r{:.0}%   ", f * 100.0))?;
+                eprintln!();
+            }
+            let t = Instant::now();
+            let s = voz::Sintetizador::cargar(&clave, 1.0)?;
+            let carga = t.elapsed().as_secs_f32();
+            let t = Instant::now();
+            let (m, sr) = s.generar(texto)?;
+            let tgen = t.elapsed().as_secs_f32();
+            let dur = m.len() as f32 / sr as f32;
+            eprintln!("{clave}: carga {carga:.1} s · {dur:.1} s de audio en {tgen:.2} s (RTF {:.2})", tgen / dur);
+            match opt("--guardar") {
+                Some(r) => drop(sherpa_onnx::write(&r, &m, sr)),
+                None => voz::reproducir(&m, sr, &std::sync::atomic::AtomicBool::new(false))?,
             }
         }
         Some("transcribir") => {

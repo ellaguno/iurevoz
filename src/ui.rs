@@ -11,6 +11,7 @@ use crate::control::{Control, Controlador, ParaUi};
 use crate::correccion::Resultado;
 use crate::motor::{Evento, Motor, Orden};
 use crate::portal::{Aviso, Portal};
+use crate::voz::{VOCES, Voz};
 
 const PRUEBA: &str = "Prueba: áéíóú ÁÉÚ ñÑ ü ¿Sí? ¡Ya! \"ok\" (1) 2...";
 
@@ -27,6 +28,15 @@ struct Frase {
     texto: String,
     correccion: Option<Resultado>,
     error: Option<String>,
+    /// Si es una instrucción del modo comando, no dictado.
+    comando: Option<ComandoUi>,
+}
+
+#[derive(Default)]
+struct ComandoUi {
+    acciones: Vec<String>,
+    respuesta: Option<String>,
+    error: Option<String>,
 }
 
 pub struct App {
@@ -41,15 +51,17 @@ pub struct App {
     listo: bool,
     faltan: Vec<String>,
     descarga: Option<(String, f32)>,
-    atajo: Option<String>,
+    atajos: std::collections::HashMap<String, String>,
     ajustes: bool,
     glosario: String,
     portal: Option<Portal>,
+    voz: Option<Voz>,
+    esperando_comando: bool,
     prueba: PruebaTeclado,
 }
 
 impl App {
-    pub fn new(cfg: Config, motor: Motor, ctl: Controlador, externos: Receiver<ParaUi>, portal: Option<Portal>) -> Self {
+    pub fn new(cfg: Config, motor: Motor, ctl: Controlador, externos: Receiver<ParaUi>, portal: Option<Portal>, voz: Option<Voz>) -> Self {
         let glosario = cfg.correccion.glosario.join(", ");
         Self {
             cfg,
@@ -63,10 +75,12 @@ impl App {
             listo: false,
             faltan: Vec::new(),
             descarga: None,
-            atajo: None,
+            atajos: Default::default(),
             ajustes: false,
             glosario,
             portal,
+            voz,
+            esperando_comando: false,
             prueba: PruebaTeclado::default(),
         }
     }
@@ -88,11 +102,15 @@ impl App {
             self.error = Some(format!("no pude guardar la configuración: {e}"));
         }
         let _ = self.motor.tx.send(Orden::Config(self.cfg.clone()));
+        if let Some(v) = &self.voz {
+            v.configurar(&self.cfg.voz.voz, self.cfg.voz.velocidad);
+        }
     }
 
     fn texto_completo(&self) -> String {
         self.frases
             .iter()
+            .filter(|f| f.comando.is_none())
             .map(|f| f.correccion.as_ref().map_or(f.texto.as_str(), |c| c.texto.as_str()).to_string())
             .collect::<Vec<_>>()
             .join("")
@@ -119,7 +137,28 @@ impl App {
                 Evento::Parcial(t) => self.parcial = t,
                 Evento::Frase { id, texto } => {
                     self.parcial.clear();
-                    self.frases.push(Frase { id, texto, correccion: None, error: None });
+                    self.frases.push(Frase { id, texto, correccion: None, error: None, comando: None });
+                }
+                Evento::EsperandoComando => self.esperando_comando = true,
+                Evento::Comando { id, instruccion } => {
+                    self.parcial.clear();
+                    self.esperando_comando = false;
+                    self.frases.push(Frase { id, texto: instruccion, correccion: None, error: None, comando: Some(ComandoUi::default()) });
+                }
+                Evento::Accion { id, texto } => {
+                    if let Some(c) = self.frases.iter_mut().find(|f| f.id == id).and_then(|f| f.comando.as_mut()) {
+                        c.acciones.push(texto);
+                    }
+                }
+                Evento::Respuesta { id, texto } => {
+                    if let Some(c) = self.frases.iter_mut().find(|f| f.id == id).and_then(|f| f.comando.as_mut()) {
+                        c.respuesta = Some(texto);
+                    }
+                }
+                Evento::ErrorComando { id, msg } => {
+                    if let Some(c) = self.frases.iter_mut().find(|f| f.id == id).and_then(|f| f.comando.as_mut()) {
+                        c.error = Some(msg);
+                    }
                 }
                 Evento::Corregida { id, res } => {
                     if let Some(f) = self.frases.iter_mut().find(|f| f.id == id) {
@@ -139,7 +178,7 @@ impl App {
         }
         while let Ok(x) = self.externos.try_recv() {
             match x {
-                ParaUi::AtajoAsignado(a) => self.atajo = Some(a),
+                ParaUi::AtajoAsignado(id, a) => drop(self.atajos.insert(id, a)),
                 ParaUi::Error(e) => self.error = Some(e),
             }
         }
@@ -158,13 +197,24 @@ impl App {
             if ui.add_enabled(self.listo, boton).clicked() {
                 self.alternar();
             }
+            let escuchando = self.ctl.estado.modo_comando.load(Ordering::Relaxed);
+            let b = egui::Button::new(RichText::new(if escuchando { "… te escucho" } else { "⌘ Comando" }).size(15.0))
+                .min_size(egui::vec2(110.0, 40.0));
+            if ui.add_enabled(self.listo && self.cfg.comandos.activos, b).clicked() {
+                self.ctl.enviar(Control::Comando);
+            }
+            let hablando = self.voz.as_ref().is_some_and(|v| v.hablando.load(Ordering::Relaxed));
+            let b = egui::Button::new(RichText::new(if hablando { "🔇 Callar" } else { "🔊 Leer" }).size(15.0)).min_size(egui::vec2(90.0, 40.0));
+            if ui.add_enabled(self.voz.is_some(), b).on_hover_text("Lee en voz alta el texto seleccionado").clicked() {
+                self.ctl.enviar(Control::Leer);
+            }
             ui.vertical(|ui| {
                 ui.label(&self.estado);
                 let nivel = f32::from_bits(self.ctl.estado.nivel.load(Ordering::Relaxed));
-                let barra = egui::ProgressBar::new((nivel * 8.0).sqrt().min(1.0)).desired_width(180.0).desired_height(6.0);
+                let barra = egui::ProgressBar::new((nivel * 8.0).sqrt().min(1.0)).desired_width(160.0).desired_height(6.0);
                 ui.add(barra);
-                let atajo = self.atajo.as_deref().unwrap_or("F9 en esta ventana");
-                ui.label(RichText::new(format!("Atajo: {atajo}")).small().weak());
+                let a = |id: &str, def: &str| self.atajos.get(id).cloned().unwrap_or_else(|| def.to_string());
+                ui.label(RichText::new(format!("Dictar {} · Comando {} · Leer {}", a("dictar", "F9"), a("comando", "—"), a("leer", "—"))).small().weak());
             });
         });
     }
@@ -192,6 +242,20 @@ impl App {
     fn transcripcion(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
             for f in &self.frases {
+                if let Some(c) = &f.comando {
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.label(RichText::new(format!("⌘ {}", f.texto.trim())).size(15.0).strong());
+                        for a in &c.acciones {
+                            ui.label(RichText::new(format!("  • {a}")).small().weak());
+                        }
+                        match (&c.respuesta, &c.error) {
+                            (_, Some(e)) => drop(ui.label(RichText::new(e).small().color(Color32::from_rgb(200, 80, 80)))),
+                            (Some(r), _) => drop(ui.label(RichText::new(r).color(Color32::from_rgb(60, 140, 200)))),
+                            _ => drop(ui.label(RichText::new("pensando…").small().italics().weak())),
+                        }
+                    });
+                    continue;
+                }
                 let texto = f.correccion.as_ref().map_or(f.texto.trim(), |c| c.texto.trim());
                 ui.label(RichText::new(texto).size(16.0));
                 if let Some(c) = &f.correccion {
@@ -216,6 +280,9 @@ impl App {
                 if let Some(e) = &f.error {
                     ui.label(RichText::new(format!("sin corregir: {e}")).small().color(Color32::from_rgb(200, 80, 80)));
                 }
+            }
+            if self.esperando_comando || self.ctl.estado.modo_comando.load(Ordering::Relaxed) {
+                ui.label(RichText::new("⌘ di tu instrucción…").italics().color(Color32::from_rgb(60, 140, 200)));
             }
             if !self.parcial.is_empty() {
                 ui.label(RichText::new(&self.parcial).size(16.0).italics().weak());
@@ -259,49 +326,7 @@ impl App {
             ui.end_row();
 
             if self.cfg.correccion.activa {
-                ui.label("Servicio");
-                let antes = self.cfg.correccion.servicio;
-                egui::ComboBox::from_id_salt("servicio")
-                    .selected_text(match antes {
-                        Servicio::Ollama => "Ollama (local)",
-                        Servicio::OpenRouter => "OpenRouter (nube)",
-                        Servicio::OpenAi => "OpenAI-compatible (llama-server…)",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.cfg.correccion.servicio, Servicio::Ollama, "Ollama (local)");
-                        ui.selectable_value(&mut self.cfg.correccion.servicio, Servicio::OpenRouter, "OpenRouter (nube)");
-                        ui.selectable_value(&mut self.cfg.correccion.servicio, Servicio::OpenAi, "OpenAI-compatible (llama-server…)");
-                    });
-                if self.cfg.correccion.servicio != antes {
-                    let s = self.cfg.correccion.servicio;
-                    self.cfg.correccion.url = Correccion::url_por_omision(s).into();
-                    self.cfg.correccion.modelo = match s {
-                        Servicio::Ollama => "gemma4:e2b",
-                        Servicio::OpenRouter => "deepseek/deepseek-v4.1-flash",
-                        Servicio::OpenAi => "local",
-                    }
-                    .into();
-                    cambio = true;
-                }
-                ui.end_row();
-
-                ui.label("Modelo");
-                cambio |= ui.text_edit_singleline(&mut self.cfg.correccion.modelo).lost_focus();
-                ui.end_row();
-                ui.label("URL");
-                cambio |= ui.text_edit_singleline(&mut self.cfg.correccion.url).lost_focus();
-                ui.end_row();
-                if self.cfg.correccion.servicio != Servicio::Ollama {
-                    ui.label("API key");
-                    let en_entorno = std::env::var(&self.cfg.correccion.variable_clave).is_ok_and(|v| !v.is_empty());
-                    if en_entorno {
-                        ui.label(RichText::new(format!("desde ${}", self.cfg.correccion.variable_clave)).weak());
-                    } else {
-                        let clave = self.cfg.correccion.clave.get_or_insert_with(String::new);
-                        cambio |= ui.add(egui::TextEdit::singleline(clave).password(true)).lost_focus();
-                    }
-                    ui.end_row();
-                }
+                cambio |= ajustes_llm(ui, "corr", &mut self.cfg.correccion);
                 ui.label("Glosario");
                 cambio |= ui
                     .add(egui::TextEdit::singleline(&mut self.glosario).hint_text("amparo, desahogar, kernel…"))
@@ -311,15 +336,97 @@ impl App {
                 cambio |= ui.add(egui::Slider::new(&mut self.cfg.correccion.max_cambio, 0.05..=0.6)).drag_stopped();
                 ui.end_row();
             }
+
+            ui.label(RichText::new("Modo comando").strong());
+            cambio |= ui.checkbox(&mut self.cfg.comandos.activos, "entender instrucciones (sin shell)").changed();
+            ui.end_row();
+            if self.cfg.comandos.activos {
+                ui.label("Prefijo hablado");
+                cambio |= ui.add(egui::TextEdit::singleline(&mut self.cfg.comandos.prefijo).hint_text("computadora")).lost_focus();
+                ui.end_row();
+                cambio |= ajustes_llm(ui, "cmd", &mut self.cfg.comandos.llm);
+            }
+
+            ui.label(RichText::new("Voz").strong());
+            cambio |= ui.checkbox(&mut self.cfg.voz.responder, "responder en voz alta").changed();
+            ui.end_row();
+            ui.label("Voz");
+            let actual = VOCES.iter().find(|v| v.0 == self.cfg.voz.voz).map_or(self.cfg.voz.voz.as_str(), |v| v.2).to_string();
+            egui::ComboBox::from_id_salt("voz").selected_text(actual).show_ui(ui, |ui| {
+                for (clave, _, desc) in VOCES {
+                    cambio |= ui.selectable_value(&mut self.cfg.voz.voz, clave.to_string(), *desc).changed();
+                }
+            });
+            ui.end_row();
+            ui.label("Velocidad");
+            ui.horizontal(|ui| {
+                cambio |= ui.add(egui::Slider::new(&mut self.cfg.voz.velocidad, 0.7..=1.6)).drag_stopped();
+                if ui.button("Probar").clicked() {
+                    if let Some(v) = &self.voz {
+                        v.configurar(&self.cfg.voz.voz, self.cfg.voz.velocidad);
+                        v.decir("Hola, soy IureVoz. Así sueno con esta voz.");
+                    }
+                }
+            });
+            ui.end_row();
         });
         self.panel_prueba(ui);
         if self.cfg.correccion.activa && self.cfg.correccion.servicio == Servicio::OpenRouter {
             ui.label(RichText::new("Con OpenRouter cada frase dictada sale de esta computadora.").small().color(Color32::from_rgb(200, 150, 0)));
         }
+        if self.cfg.comandos.activos && self.cfg.comandos.llm.servicio == Servicio::OpenRouter {
+            ui.label(RichText::new("Con OpenRouter cada instrucción sale de esta computadora.").small().color(Color32::from_rgb(200, 150, 0)));
+        }
         if cambio {
             self.aplicar_config();
         }
     }
+}
+
+/// Servicio, modelo, URL y clave de un LLM. Devuelve true si algo cambió.
+fn ajustes_llm(ui: &mut egui::Ui, id: &str, c: &mut Correccion) -> bool {
+    let mut cambio = false;
+    ui.label("Servicio");
+    let antes = c.servicio;
+    egui::ComboBox::from_id_salt(format!("servicio-{id}"))
+        .selected_text(match antes {
+            Servicio::Ollama => "Ollama (local)",
+            Servicio::OpenRouter => "OpenRouter (nube)",
+            Servicio::OpenAi => "OpenAI-compatible (llama-server…)",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut c.servicio, Servicio::Ollama, "Ollama (local)");
+            ui.selectable_value(&mut c.servicio, Servicio::OpenRouter, "OpenRouter (nube)");
+            ui.selectable_value(&mut c.servicio, Servicio::OpenAi, "OpenAI-compatible (llama-server…)");
+        });
+    if c.servicio != antes {
+        c.url = Correccion::url_por_omision(c.servicio).into();
+        c.modelo = match c.servicio {
+            Servicio::Ollama => "gemma4:e2b",
+            Servicio::OpenRouter => "deepseek/deepseek-v4.1-flash",
+            Servicio::OpenAi => "local",
+        }
+        .into();
+        cambio = true;
+    }
+    ui.end_row();
+    ui.label("Modelo");
+    cambio |= ui.text_edit_singleline(&mut c.modelo).lost_focus();
+    ui.end_row();
+    ui.label("URL");
+    cambio |= ui.text_edit_singleline(&mut c.url).lost_focus();
+    ui.end_row();
+    if c.servicio != Servicio::Ollama {
+        ui.label("API key");
+        if std::env::var(&c.variable_clave).is_ok_and(|v| !v.is_empty()) {
+            ui.label(RichText::new(format!("desde ${}", c.variable_clave)).weak());
+        } else {
+            let clave = c.clave.get_or_insert_with(String::new);
+            cambio |= ui.add(egui::TextEdit::singleline(clave).password(true)).lost_focus();
+        }
+        ui.end_row();
+    }
+    cambio
 }
 
 impl App {
@@ -399,8 +506,8 @@ impl eframe::App for App {
             self.faltantes(ui);
             self.transcripcion(ui);
         });
-        if self.grabando() {
-            // el medidor de nivel se anima mientras se graba
+        if self.grabando() || self.voz.as_ref().is_some_and(|v| v.hablando.load(Ordering::Relaxed)) {
+            // el medidor y el botón de la voz se animan mientras hay actividad
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
         }
     }
@@ -427,8 +534,18 @@ pub fn ejecutar(cfg: Config, sin_portal: bool) -> eframe::Result {
             let portal = (!sin_portal).then(|| {
                 Portal::iniciar(cfg.token_portal.clone(), true, move |a| drop(tx_aviso.send(a)))
             });
-            let motor = Motor::iniciar(cfg.clone(), portal.clone(), repintar.clone());
-            let ctl = Controlador::iniciar(motor.tx.clone(), tx_ui.clone(), repintar.clone());
+            let voz = {
+                let tx = tx_ui.clone();
+                let r = repintar.clone();
+                Some(Voz::iniciar(cfg.voz.voz.clone(), cfg.voz.velocidad, move |m| {
+                    let _ = tx.send(ParaUi::Error(m));
+                    r();
+                }))
+            };
+            let estado = crate::control::Estado::new();
+            let (tx_ctl, rx_ctl) = crossbeam_channel::unbounded::<Control>();
+            let motor = Motor::iniciar(cfg.clone(), portal.clone(), voz.clone(), estado.clone(), tx_ctl.clone(), repintar.clone());
+            let ctl = Controlador::iniciar(tx_ctl, rx_ctl, estado, motor.tx.clone(), voz.clone(), tx_ui.clone(), repintar.clone());
             {
                 let ctl = ctl.clone();
                 let r = repintar.clone();
@@ -440,7 +557,7 @@ pub fn ejecutar(cfg: Config, sin_portal: bool) -> eframe::Result {
                 });
             }
             crate::control::escuchar_socket(ctl.clone());
-            Ok(Box::new(App::new(cfg, motor, ctl, rx_ui, portal)))
+            Ok(Box::new(App::new(cfg, motor, ctl, rx_ui, portal, voz)))
         }),
     )
 }
