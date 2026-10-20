@@ -22,7 +22,9 @@ fn lanzador() -> &'static Sender<Pedido> {
                     unsafe {
                         use std::os::unix::process::CommandExt;
                         cmd.pre_exec(|| {
-                            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                            // SIGKILL y no SIGTERM: llama-server atrapa SIGTERM para cerrar en orden
+                            // y, con el modelo dormido, no llega a salir
+                            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
                             Ok(())
                         });
                     }
@@ -34,7 +36,7 @@ fn lanzador() -> &'static Sender<Pedido> {
     })
 }
 
-/// Lanza `cmd` ligado a la vida de la app (si la app muere, el proceso recibe SIGTERM).
+/// Lanza `cmd` ligado a la vida de la app (si la app muere, el proceso recibe SIGKILL).
 pub fn lanzar(cmd: Command) -> std::io::Result<Child> {
     let (tx, rx) = bounded(1);
     lanzador().send((cmd, tx)).map_err(|_| std::io::Error::other("lanzador detenido"))?;
