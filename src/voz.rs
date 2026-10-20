@@ -138,6 +138,61 @@ impl Sintetizador {
     }
 }
 
+/// Deja el texto apto para leerse en voz alta: sin código, símbolos ni rutas completas.
+pub fn para_voz(texto: &str) -> String {
+    // bloques de código: no se leen
+    let mut t = String::new();
+    for (i, parte) in texto.split("```").enumerate() {
+        if i % 2 == 0 {
+            t.push_str(parte);
+        } else {
+            t.push_str(" ");
+        }
+    }
+    // código en línea: de un comando solo interesa el archivo que menciona, si hay
+    let mut sin_codigo = String::new();
+    for (i, parte) in t.split('`').enumerate() {
+        if i % 2 == 0 {
+            sin_codigo.push_str(parte);
+            continue;
+        }
+        let es_comando = parte.contains(['$', '|', '&', '>', '<', '{', '=', ';']) || parte.split_whitespace().count() > 2;
+        if !es_comando {
+            sin_codigo.push_str(parte);
+        } else if let Some(ruta) = parte.split_whitespace().find(|w| w.contains('/')) {
+            sin_codigo.push_str(ruta);
+        }
+    }
+    let t = sin_codigo;
+    let palabras: Vec<String> = t
+        .split_whitespace()
+        .filter_map(|p| {
+            let limpio = p.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | '(' | ')' | ',' | ';' | ':' | '.' | '«' | '»'));
+            let fin = &p[p.trim_end_matches(['.', ',', ';', ':', ')']).len()..];
+            if limpio.starts_with("http://") || limpio.starts_with("https://") {
+                let dominio = limpio.split('/').nth(2).unwrap_or("").trim_start_matches("www.");
+                return Some(format!("un enlace a {dominio}{fin}"));
+            }
+            // rutas: solo el último nombre («/home/u/notas.txt» → «notas.txt»)
+            if limpio.matches('/').count() >= 1 && (limpio.starts_with('/') || limpio.starts_with("~/") || limpio.matches('/').count() >= 2) {
+                let ultimo = limpio.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+                return Some(if ultimo.is_empty() || ultimo == "~" { format!("una carpeta{fin}") } else { format!("{}{fin}", ultimo.replace(['_', '-'], " ")) });
+            }
+            // fragmentos de shell o código: sin letras suficientes para leerse
+            let letras = limpio.chars().filter(|c| c.is_alphabetic()).count();
+            let raros = limpio.chars().filter(|c| matches!(c, '$' | '|' | '&' | '>' | '<' | '{' | '}' | '[' | ']' | '=' | '\\' | '^' | '~' | '*' | '#' | '`')).count();
+            if raros > 0 && (raros * 2 >= letras || limpio.starts_with('$') || limpio.starts_with('-')) {
+                return None;
+            }
+            // las marcas de formato se quitan; los demás símbolos separan palabras
+            let p = p.replace(['`', '*', '#'], "").replace(['|', '_', '<', '>', '{', '}', '[', ']', '\\', '$', '^', '~'], " ").replace('→', " a ").replace('•', " ");
+            let p = p.trim().to_string();
+            (!p.is_empty()).then_some(p)
+        })
+        .collect();
+    palabras.join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Divide en oraciones para empezar a hablar pronto y poder interrumpir entre ellas.
 pub fn oraciones(texto: &str) -> Vec<String> {
     let mut v = Vec::new();
@@ -233,7 +288,10 @@ impl Voz {
     }
 
     pub fn decir(&self, texto: impl Into<String>) {
-        let _ = self.tx.send(Orden::Decir(texto.into()));
+        let t = para_voz(&texto.into());
+        if !t.trim().is_empty() {
+            let _ = self.tx.send(Orden::Decir(t));
+        }
     }
 
     pub fn callar(&self) {
@@ -293,4 +351,18 @@ pub fn reproducir(muestras: &[f32], sr: i32, callar: &AtomicBool) -> Result<()> 
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::para_voz;
+
+    #[test]
+    fn limpia_para_voz() {
+        assert_eq!(para_voz("Guardé el script en /home/ellaguno/ultimos_accesos.sh y lo probé."), "Guardé el script en ultimos accesos.sh y lo probé.");
+        assert_eq!(para_voz("Ejecuta `~/ultimos_accesos.sh 2 | head -50` para verlo."), "Ejecuta ultimos accesos.sh para verlo.");
+        assert_eq!(para_voz("Mira https://es.wikipedia.org/wiki/Amparo, ahí está."), "Mira un enlace a es.wikipedia.org, ahí está.");
+        assert_eq!(para_voz("Hecho:\n```bash\nls -la $HOME\n```\nListo."), "Hecho: Listo.");
+        assert_eq!(para_voz("**Importante**: el paso → siguiente"), "Importante: el paso a siguiente");
+    }
 }

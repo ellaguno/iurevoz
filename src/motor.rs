@@ -125,7 +125,7 @@ fn si_o_no(frase: &str) -> Option<bool> {
 fn para_claude(instruccion: &str) -> Option<String> {
     let p = crate::correccion::palabras(instruccion);
     let primera = p.first()?;
-    if !matches!(primera.as_str(), "claude" | "cloud" | "clod" | "clode" | "claud" | "clau" | "glod" | "klod") {
+    if !matches!(primera.as_str(), "claude" | "cloud" | "clod" | "clode" | "claud" | "clau" | "glod" | "klod" | "clave" | "claudio") {
         return None;
     }
     let resto = instruccion.trim_start_matches(|c: char| !c.is_alphanumeric());
@@ -410,7 +410,8 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
             ag = ag.con_claude(Box::new(move |tarea: &str| {
                 // el modelo local decidió delegar: se confirma antes de mandar nada fuera
                 let (tx, rx) = crossbeam_channel::bounded(1);
-                let _ = control.send(Control::Permiso(format!("encargarse de: {tarea}"), tx));
+                let resumen: String = tarea.split(['.', ',', '(']).next().unwrap_or(tarea).trim().to_string();
+                let _ = control.send(Control::Permiso(format!("encargarse de: {tarea}"), format!("encargarse de {resumen}"), tx));
                 if rx.recv_timeout(std::time::Duration::from_secs(110)).unwrap_or(false) {
                     lanzar_claude(id, tarea.to_string(), v.clone(), ev.clone());
                     Ok("le pasé la tarea a Claude; avisaré cuando termine".into())
@@ -544,6 +545,7 @@ mod pruebas {
         assert_eq!(para_claude("Claude, revisa mis descargas").as_deref(), Some("revisa mis descargas"));
         assert_eq!(para_claude("Cloud busca los PDF del expediente").as_deref(), Some("busca los PDF del expediente"));
         assert_eq!(para_claude("abre la calculadora"), None);
+        assert_eq!(para_claude("Clave, instala htop").as_deref(), Some("instala htop"));
     }
 
     #[test]

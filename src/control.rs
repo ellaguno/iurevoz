@@ -30,8 +30,8 @@ pub enum Control {
     Leer,
     /// Atajo global: (id, pulsado).
     Atajo(String, bool),
-    /// Pedir permiso al usuario: descripción y a quién avisar la decisión.
-    Permiso(String, Sender<bool>),
+    /// Pedir permiso al usuario: descripción (ventana), versión hablada y a quién avisar.
+    Permiso(String, String, Sender<bool>),
     /// Respuesta del usuario (botones o voz) al permiso pendiente.
     Responder(bool),
     /// El permiso con este número venció sin respuesta.
@@ -181,7 +181,7 @@ impl Controlador {
                             }
                             None => drop(ui.send(ParaUi::Error("la voz está desactivada".into()))),
                         },
-                        Control::Permiso(desc, tx) => {
+                        Control::Permiso(desc, hablada, tx) => {
                             numero += 1;
                             log(&format!("permiso #{numero}: {desc}"));
                             // un permiso anterior sin responder se niega
@@ -189,7 +189,7 @@ impl Controlador {
                                 let _ = viejo.send(false);
                             }
                             if let Some(v) = &voz {
-                                v.decir(format!("Claude quiere {desc}. ¿Lo permito?"));
+                                v.decir(format!("Claude quiere {hablada}. ¿Lo permito?"));
                             }
                             if captura.is_none() {
                                 match abrir(&e) {
@@ -301,14 +301,13 @@ pub fn escuchar_socket(ctl: Controlador) {
                 let _ = (&c).take(16 * 1024).read_to_string(&mut orden);
                 if let Some(json) = orden.trim().strip_prefix("permiso ") {
                     // petición de `iurevoz mcp-permisos`: se responde «si» o «no» por el mismo socket
-                    let desc = serde_json::from_str::<serde_json::Value>(json)
-                        .ok()
-                        .and_then(|v| v["descripcion"].as_str().map(str::to_string))
-                        .unwrap_or_else(|| "hacer una acción".into());
+                    let v = serde_json::from_str::<serde_json::Value>(json).unwrap_or_default();
+                    let desc = v["descripcion"].as_str().unwrap_or("hacer una acción").to_string();
+                    let hablada = v["hablada"].as_str().map_or_else(|| desc.clone(), str::to_string);
                     let ctl = ctl.clone();
                     std::thread::spawn(move || {
                         let (tx, rx) = crossbeam_channel::bounded(1);
-                        ctl.enviar(Control::Permiso(desc, tx));
+                        ctl.enviar(Control::Permiso(desc, hablada, tx));
                         let si = rx.recv_timeout(std::time::Duration::from_secs(110)).unwrap_or(false);
                         let mut c = c;
                         let _ = c.write_all(if si { b"si" } else { b"no" });

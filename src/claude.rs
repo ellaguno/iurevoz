@@ -18,6 +18,7 @@ const LECTURA: &[&str] = &["Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch"
 const INSTRUCCIONES: &str = "Te habla en español una persona por voz, mediante IureVoz. \
 Su instrucción viene de un reconocedor de voz y puede tener errores: interpreta la intención. \
 Cada acción que modifique algo se le pregunta en voz alta, así que no pidas confirmaciones extra. \
+En cada comando de Bash pon en el campo description, en español, qué hace en pocas palabras (se lee en voz alta). \
 Al terminar responde en español en una a tres frases cortas, sin markdown, porque se leerán en voz alta.";
 
 #[allow(dead_code)]
@@ -25,7 +26,23 @@ pub fn disponible() -> bool {
     Command::new("claude").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
-/// Descripción breve de una acción, para preguntarla en voz alta.
+/// Versión hablada: solo qué se va a hacer, sin el comando ni rutas completas.
+pub fn describir_para_voz(herramienta: &str, entrada: &Value) -> String {
+    let s = |k: &str| entrada[k].as_str().unwrap_or("").to_string();
+    let nombre = |k: &str| s(k).rsplit('/').next().unwrap_or("").to_string();
+    match herramienta {
+        "Bash" => {
+            let d = s("description");
+            if d.is_empty() { "ejecutar un comando".into() } else { d }
+        }
+        "Write" => format!("crear o sobrescribir el archivo {}", nombre("file_path")),
+        "Edit" | "MultiEdit" => format!("editar el archivo {}", nombre("file_path")),
+        "NotebookEdit" => format!("editar el cuaderno {}", nombre("notebook_path")),
+        h => format!("usar {h}"),
+    }
+}
+
+/// Descripción de una acción para la ventana (con el comando completo).
 pub fn describir(herramienta: &str, entrada: &Value) -> String {
     let s = |k: &str| entrada[k].as_str().unwrap_or("").to_string();
     let corto = |t: String| if t.chars().count() > 160 { format!("{}…", t.chars().take(160).collect::<String>()) } else { t };
@@ -171,7 +188,11 @@ pub fn servidor_permisos() -> Result<()> {
                 let a = &m["params"]["arguments"];
                 let herramienta = a["tool_name"].as_str().unwrap_or("");
                 let entrada = a["input"].clone();
-                let pedido = json!({"herramienta": herramienta, "descripcion": describir(herramienta, &entrada)});
+                let pedido = json!({
+                    "herramienta": herramienta,
+                    "descripcion": describir(herramienta, &entrada),
+                    "hablada": describir_para_voz(herramienta, &entrada),
+                });
                 let (ok, motivo) = match std::env::var("IUREVOZ_PERMISO_PRUEBA").as_deref() {
                     Ok("si") => (true, String::new()),
                     Ok(_) => (false, "prueba: negado".into()),
