@@ -58,6 +58,50 @@ pub fn describir(herramienta: &str, entrada: &Value) -> String {
     }
 }
 
+/// Tarea de Claude en curso, para mostrarla en la ventana.
+#[derive(Clone)]
+pub struct Tarea {
+    pub num: u64,
+    pub resumen: String,
+    pub inicio: std::time::Instant,
+    pub ultimo: String,
+    /// grupo de procesos de `claude` (incluye lo que lance, como scripts)
+    pgid: u32,
+    detenida: bool,
+}
+
+static TAREAS: std::sync::Mutex<Vec<Tarea>> = std::sync::Mutex::new(Vec::new());
+static NUMERO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Tareas de Claude que siguen corriendo.
+pub fn tareas() -> Vec<Tarea> {
+    TAREAS.lock().unwrap().clone()
+}
+
+/// Termina una tarea y todo lo que haya lanzado.
+pub fn detener(num: u64) {
+    let mut t = TAREAS.lock().unwrap();
+    if let Some(x) = t.iter_mut().find(|x| x.num == num) {
+        x.detenida = true;
+        let _ = Command::new("kill").args(["-TERM", &format!("-{}", x.pgid)]).status();
+    }
+}
+
+fn anotar(num: u64, ultimo: &str) {
+    if let Some(x) = TAREAS.lock().unwrap().iter_mut().find(|x| x.num == num) {
+        x.ultimo = ultimo.to_string();
+    }
+}
+
+/// Quita la tarea de la lista al terminar, pase lo que pase.
+struct Registro(u64);
+
+impl Drop for Registro {
+    fn drop(&mut self) {
+        TAREAS.lock().unwrap().retain(|x| x.num != self.0);
+    }
+}
+
 /// Lo que va pasando mientras Claude trabaja.
 pub enum Progreso {
     Texto(String),
@@ -79,7 +123,9 @@ pub fn ejecutar(tarea: &str, mut progreso: impl FnMut(Progreso)) -> Result<Strin
             cmd.env_remove(k);
         }
     }
+    use std::os::unix::process::CommandExt;
     let mut hijo = cmd
+        .process_group(0) // grupo propio: «Detener» termina también lo que Claude lance
         .current_dir(&home)
         .args(["-p", tarea, "--output-format", "stream-json", "--verbose"])
         .arg("--mcp-config")
@@ -93,6 +139,25 @@ pub fn ejecutar(tarea: &str, mut progreso: impl FnMut(Progreso)) -> Result<Strin
         .stderr(Stdio::piped())
         .spawn()
         .context("no pude ejecutar claude (¿está instalado?)")?;
+
+    let num = NUMERO.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let resumen: String = tarea.chars().take(80).collect();
+    TAREAS.lock().unwrap().push(Tarea {
+        num,
+        resumen,
+        inicio: std::time::Instant::now(),
+        ultimo: "empezando…".into(),
+        pgid: hijo.id(),
+        detenida: false,
+    });
+    let _registro = Registro(num);
+    let mut progreso = |p: Progreso| {
+        match &p {
+            Progreso::Texto(t) => anotar(num, t),
+            Progreso::Herramienta(h) => anotar(num, h),
+        }
+        progreso(p)
+    };
 
     let mut resultado = None;
     for linea in BufReader::new(hijo.stdout.take().unwrap()).lines() {
@@ -119,6 +184,9 @@ pub fn ejecutar(tarea: &str, mut progreso: impl FnMut(Progreso)) -> Result<Strin
     }
     let estado = hijo.wait()?;
     let _ = std::fs::remove_file(&ruta_mcp);
+    if TAREAS.lock().unwrap().iter().any(|x| x.num == num && x.detenida) {
+        bail!("detuviste la tarea");
+    }
     match resultado {
         Some(r) if r["is_error"].as_bool() != Some(true) => Ok(r["result"].as_str().unwrap_or("").trim().to_string()),
         Some(r) => bail!("Claude terminó con error: {}", r["result"].as_str().unwrap_or("sin detalle")),

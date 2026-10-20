@@ -464,6 +464,32 @@ fn ajustes_llm(ui: &mut egui::Ui, id: &str, c: &mut Correccion) -> bool {
 }
 
 impl App {
+    /// Tareas de Claude corriendo en segundo plano.
+    fn tareas_claude(&mut self, ui: &mut egui::Ui) {
+        let tareas = crate::claude::tareas();
+        if tareas.is_empty() {
+            return;
+        }
+        for t in tareas {
+            egui::Frame::group(ui.style()).fill(Color32::from_rgba_unmultiplied(60, 140, 200, 25)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    let s = t.inicio.elapsed().as_secs();
+                    ui.label(RichText::new(format!("Claude trabajando · {}:{:02}", s / 60, s % 60)).strong());
+                    if ui.button("■ Detener").on_hover_text("Termina la tarea y lo que Claude haya lanzado").clicked() {
+                        crate::claude::detener(t.num);
+                    }
+                });
+                ui.label(RichText::new(&t.resumen).small());
+                let ultimo: String = t.ultimo.chars().take(140).collect();
+                ui.label(RichText::new(format!("↳ {ultimo}")).small().weak());
+            });
+        }
+        ui.add_space(6.0);
+        // el reloj y el indicador se actualizan aunque no lleguen eventos
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+    }
+
     /// Permiso pendiente de Claude: también se responde diciendo «sí» o «no».
     fn permiso(&mut self, ui: &mut egui::Ui) {
         let desc = self.ctl.estado.pendiente.lock().unwrap().as_ref().map(|(_, d, _)| d.clone());
@@ -559,6 +585,7 @@ impl eframe::App for App {
         });
         egui::CentralPanel::default().show(ui, |ui| {
             self.faltantes(ui);
+            self.tareas_claude(ui);
             self.permiso(ui);
             self.transcripcion(ui);
         });
