@@ -110,6 +110,21 @@ Flujo resultante: grabación limpia del usuario (~1–2 min de referencia) → e
   - Probado en CPU con 3 frases, incluida la reanudación.
   - Paquete de entrada (contiene la voz del usuario: **privado**): `~/.local/share/iurevoz/kaggle-voz.zip`.
 
+- **T5 · Entrenamiento:** `bench/corpus/entrenar_piper.ipynb` (Kaggle o Colab).
+  - **Base:** Piper v1.8.0, con warmstart desde `es_MX-ald` medium. Mezcla el corpus sintético con las 42 grabaciones reales repetidas ×3; todo a 22050 Hz y -20 dBFS RMS.
+  - **Sesiones:** se detiene solo a las 11 h y continúa en otra versión desde `last.ckpt`.
+  - **Salida:** exporta el último checkpoint y el mejor por `val_mel`, más 5 muestras de cada uno.
+  - **Fallas de Piper v1.8.0 que corrige el lanzador propio:**
+    - Los checkpoints por defecto vigilan `val_mos`, que necesita torchaudio, y torchaudio ya no existe para PyTorch reciente.
+    - Al continuar, el warmstart se aplica después de restaurar el checkpoint y borraría lo entrenado.
+    - El exportador ONNX nuevo (dynamo) no puede con VITS; se fuerza el clásico.
+  - **Probado en CPU de punta a punta:** warmstart, épocas, exportación, muestras, limpieza y reanudación.
+  - **Grabaciones reales para subir:** `~/.local/share/iurevoz/kaggle-mi-voz.zip` (privado).
+- **Empaquetado local:** `bench/empaquetar_voz.py modelo.onnx`.
+  - Arma `~/.local/share/iurevoz/voces/vits-piper-es_MX-<nombre>-medium/` como los paquetes de sherpa (metadatos, `tokens.txt` y espeak-ng-data) y sintetiza una prueba.
+  - Omite del `tokens.txt` los grupos de vocales de varios caracteres que agrega Piper 1.8 (no se usan y sherpa 1.13.8 los rechaza).
+  - Probado: sherpa-onnx carga el modelo exportado.
+
 ## Pendiente
 
 - Presupuesto para GPU en la nube (T4–T5).
