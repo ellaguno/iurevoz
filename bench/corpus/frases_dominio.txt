@@ -1,0 +1,133 @@
+# Frases de dominio para el corpus de la voz propia (español de México). Texto propio.
+# Se leen tal cual: sin cifras (las plantillas de corpus_tts.py generan cifras normalizadas).
+
+# --- Asistente: confirmaciones, avisos, preguntas ---
+Listo, ya lo guardé.
+Ya quedó, ¿algo más?
+Claro, ahorita lo busco.
+Dame un segundo, lo estoy revisando.
+Ya te mandé el correo con el documento adjunto.
+No encontré nada con ese nombre, ¿me das otra pista?
+¿Quieres que lo abra en el editor?
+¿Lo guardo en la carpeta del expediente o en descargas?
+Perdón, no te escuché bien. ¿Me lo repites?
+Va, lo dejo pendiente para mañana.
+Tienes una audiencia hoy a mediodía y dos vencimientos esta semana.
+Hoy no tienes nada agendado por la tarde.
+Ya registré las horas en el asunto.
+El archivo es muy grande; ¿quieres que solo te lea el resumen?
+Encontré tres documentos que coinciden. ¿Cuál abro?
+Se terminó la transcripción de la junta.
+No tengo permiso para hacer eso sin que me lo confirmes.
+¿Lo permito?
+Hecho. Si necesitas otra cosa, aquí estoy.
+Ahorita no hay conexión con el servidor; lo intento en un momento.
+La grabación quedó guardada con el nombre de la reunión.
+Te recuerdo que mañana vence el plazo para contestar.
+Ya está lista la versión corregida del escrito.
+Abrí la carpeta del cliente en el explorador.
+¿Quieres que te lea los pendientes en orden de urgencia?
+Sí, claro.
+No, gracias.
+Perfecto, gracias.
+Con gusto.
+De nada.
+
+# --- Jurídico ---
+Se promueve juicio de amparo indirecto en contra del acto reclamado.
+La autoridad responsable rindió su informe justificado en tiempo.
+Se admite la demanda y se ordena emplazar a la parte demandada.
+El juez desechó el recurso por haberse presentado fuera de plazo.
+Interpusimos recurso de revisión ante el tribunal colegiado.
+La sentencia fue confirmada en segunda instancia.
+Se ofrecieron como pruebas la documental pública y la testimonial.
+El perito en materia de grafoscopía rindió su dictamen.
+Hay que desahogar la prueba confesional a cargo del actor.
+El ministerio público formuló imputación en la audiencia inicial.
+Se dictó auto de vinculación a proceso y se fijó un plazo de investigación complementaria.
+La defensa solicitó la suspensión condicional del proceso.
+Las partes llegaron a un acuerdo reparatorio.
+El contrato se rescindió por incumplimiento de pago.
+Se pactó una pena convencional por cada día de retraso.
+El arrendatario no ha pagado las rentas vencidas.
+Promovimos juicio especial de desahucio.
+El notario dio fe de la constitución de la sociedad.
+Hay que inscribir la escritura en el Registro Público de la Propiedad.
+El poder general para pleitos y cobranzas sigue vigente.
+La junta de conciliación fijó fecha para la audiencia de pruebas y alegatos.
+El trabajador demandó la reinstalación y el pago de salarios caídos.
+Se presentó el aviso de rescisión de la relación laboral.
+La empresa ofreció la indemnización constitucional.
+El divorcio se tramitó por vía incausada.
+Se fijó la guarda y custodia a favor de la madre.
+El régimen de convivencia será los fines de semana alternados.
+La pensión alimenticia se descontará directamente de la nómina.
+Se otorgó la suspensión definitiva y quedó sin efectos el embargo.
+El crédito fiscal fue impugnado mediante juicio de nulidad.
+El tribunal declaró la nulidad lisa y llana de la resolución.
+Hay que presentar la declaración anual antes de que termine abril.
+El cliente recibió un requerimiento de la autoridad fiscal.
+Pidieron una prórroga para exhibir la documentación.
+La Suprema Corte resolvió la contradicción de criterios.
+La jurisprudencia es obligatoria para los tribunales inferiores.
+El escrito debe ir firmado por el abogado patrono.
+Se tiene por autorizado al licenciado para oír y recibir notificaciones.
+Se notificó por estrados porque no se encontró a la persona buscada.
+El actuario levantó la razón de la diligencia.
+Se agregó a los autos la copia certificada del acta de nacimiento.
+La parte actora se desistió de la acción.
+El expediente se turnó al secretario de acuerdos.
+Pasamos a la etapa de alegatos.
+Se citó a las partes para oír sentencia.
+El magistrado ponente presentó su proyecto de resolución.
+Se interpuso queja por defecto en el cumplimiento de la sentencia.
+El inmueble está libre de gravámenes.
+Hay que tramitar la constancia de situación fiscal.
+Firmamos el convenio de confidencialidad con el proveedor.
+La cláusula de jurisdicción remite a los tribunales de la Ciudad de México.
+
+# --- Coloquial mexicano ---
+Órale, qué bien.
+Ajá, sí, ya entendí.
+Ándale, así es.
+¡Híjole! Se me olvidó por completo.
+No manches, ¿en serio?
+Ahorita lo veo, no te preocupes.
+¿Qué onda? ¿Cómo te fue en la audiencia?
+Está padrísimo cómo quedó el escrito.
+Ya mero acabo, nomás me falta revisar las firmas.
+¿Mande? No te oí.
+Sale, nos vemos al rato.
+Échale un ojo cuando puedas.
+Ni modo, lo hacemos otra vez.
+Qué buena onda, muchas gracias.
+¿Neta ya te contestaron?
+Está bien, pero apúrate porque ya es tarde.
+Me late la idea, vamos a intentarlo.
+Al chile, no sé qué pasó.
+Bueno, ¿quién habla?
+Ay, qué pena, discúlpame.
+Fíjate que no llegó el oficio.
+A ver, déjame checarlo.
+Pues sí, tienes toda la razón.
+¡Ándale pues!
+Llámale a Guillermo y pídele la llave del archivo.
+Allá en la oficina de Coyoacán dejé las carpetas amarillas.
+Yo creo que llueve en la tarde, llévate el paraguas.
+La calle está llena de baches y de charcos.
+Ayer fuimos a comer tlayudas y mole a una fonda en Oaxaca.
+El tianguis de los martes tiene jitomates, chiles y aguacates baratos.
+Hay un tráfico tremendo en el Periférico.
+Se me hizo tardísimo por el metro.
+
+# --- Preguntas y exclamaciones variadas ---
+¿A qué hora es la cita?
+¿Ya revisaste los pendientes de hoy?
+¿Dónde guardaste el contrato firmado?
+¿Cuánto falta para que venza el plazo?
+¿Quién lleva el asunto de la sucesión?
+¿Por qué no se presentó el testigo?
+¿Me puedes leer el último párrafo?
+¡Qué barbaridad! Otra vez se cayó el sistema.
+¡Excelente trabajo, felicidades!
+¡Cuidado con ese plazo, que es fatal!

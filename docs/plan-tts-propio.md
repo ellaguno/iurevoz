@@ -61,7 +61,7 @@ No existe un corpus es-MX de un solo locutor, con calidad de estudio y licencia 
 |---|---|---|
 | **T0 · Banco de pruebas** ✅ | `bench/tts_bench.py` + `bench/frases_tts.tsv` (30 frases de dominio): RTF y CER con Moonshine, `--wavs` para audio de otros modelos, `--normalizar`, `--mos` opcional. Falta integrar la similitud de locutor (se midió aparte con CAM++ de sherpa-onnx) | Local, gratis |
 | **T1 · Normalizador de texto** ✅ | `src/normalizar.rs`, usado por `voz::para_hablar`. Bajó el CER de Piper claude de 4.7 a 2.7 % y el de Supertonic de 5.1 a 2.8 % | Local, gratis |
-| **T2 · Elegir maestro** (falta escuchar) | Generar las 30 frases con Chatterbox es-mx-latam y Qwen3-TTS clonando la voz del usuario (en CPU: no caben en la P1000 junto a IureTranscribe). Escucharlas y pasarlas por T0 | Local, gratis |
+| **T2 · Elegir maestro** ✅ Qwen3 1.7B | Generar las 30 frases con Chatterbox es-mx-latam y Qwen3-TTS clonando la voz del usuario (en CPU: no caben en la P1000 junto a IureTranscribe). Escucharlas y pasarlas por T0 | Local, gratis |
 | **T3 · Guion** | Unas 3,000 frases: selección greedy por cobertura de difonos sobre texto propio o de dominio público, más vocabulario jurídico, números y preguntas/exclamaciones | Local |
 | **T4 · Corpus** | Sintético con el maestro (GPU rentada) y/o grabación del locutor. Limpieza, recorte de silencios y verificación con ASR (se descartan las frases cuyo CER supere un umbral) | ~5–20 USD de GPU; locutor aparte |
 | **T5 · Entrenar** | Afinar Piper medium desde es_MX-ald. En paralelo, Matcha | GPU de 24 GB rentada, ~1 día: ~20–100 USD |
@@ -89,6 +89,26 @@ Flujo resultante: grabación limpia del usuario (~1–2 min de referencia) → e
   - Similitud 0.81, un poco mayor que la de Chatterbox.
   - En CPU tarda 13–18× tiempo real. Apache-2.0 y sin marca de agua.
   - Los dos maestros sirven; falta que el usuario elija de oído. Las muestras están en `muestras-voz/comparacion-maestros/`.
+
+- **Elección de oído (2026-10-21):** el usuario descartó Chatterbox (acento no mexicano: «llamále», «orále», erre suave). Prefirió Qwen3. Variantes probadas: la B (cinco clips de referencia) aún dice «lámale»; **elegida la C, Qwen3-TTS 1.7B con referencia coloquial (clips 037 «Órale…» y 040 «Ajá…»)**. La A (0.6B, misma referencia) también le gustó.
+- **Lección:** CER y similitud de locutor no detectan acento ni acentuación. Toda voz se valida de oído antes de avanzar.
+- **T3 · Guion del corpus:** `bench/corpus_tts.py` → `bench/corpus/guion_corpus.tsv`, con 6000 frases (≈ 7.8 h).
+  - **Fuentes:**
+    - 120 frases de dominio propias (`corpus/frases_dominio.txt`).
+    - 500 plantillas con cifras normalizadas.
+    - Frases de Common Voice (CC0) elegidas por cobertura de difonos de espeak es-419, prefiriendo las conversacionales.
+  - **Filtros:** quita las formas de España, los nombres propios a media frase y las palabras raras (frecuencia menor a 5).
+  - **Resultado:** cubre los 619 difonos; 11 % son preguntas o exclamaciones.
+- **Filtro fonético:** `bench/corpus/filtro_fonemas.py`.
+  - Usa wav2vec2-xlsr-53-espeak-cv-ft y compara con espeak en clases gruesas.
+  - Calibración: en la voz real del usuario el PER sale entre 0 y 7 %; en las variantes A y C, entre 0 y 10 %. Detecta la «lámale» de la variante B.
+  - Umbral: PER > 15 % o «ll» dicha como «l» → regenerar.
+  - La «zeta» no se puede juzgar: el reconocedor también la oye en la voz real.
+- **T4 · Generación:** `bench/corpus/generar_corpus.ipynb`.
+  - Corre en Kaggle (T4/P100, sesiones de 12 h, reanudable) o en Colab (escribe en Drive).
+  - Genera en lotes, aplica el filtro con hasta 3 semillas por frase y escribe un `metadata.csv` LJSpeech solo con las frases aceptadas.
+  - Probado en CPU con 3 frases, incluida la reanudación.
+  - Paquete de entrada (contiene la voz del usuario: **privado**): `~/.local/share/iurevoz/kaggle-voz.zip`.
 
 ## Pendiente
 
