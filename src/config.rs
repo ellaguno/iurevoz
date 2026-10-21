@@ -119,6 +119,25 @@ impl Default for Escucha {
     }
 }
 
+/// Iurefficient: resumen del día y avisos (F5).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IureCfg {
+    /// Decir «tu día» al abrir IureVoz.
+    pub resumen_al_iniciar: bool,
+    /// Sondear la instancia y avisar tareas que vencen y notificaciones nuevas.
+    pub avisos: bool,
+    /// Además de la notificación de escritorio, decirlos en voz alta.
+    pub avisos_hablados: bool,
+    pub cada_minutos: u32,
+}
+
+impl Default for IureCfg {
+    fn default() -> Self {
+        Self { resumen_al_iniciar: false, avisos: true, avisos_hablados: false, cada_minutos: 15 }
+    }
+}
+
 /// Voz (TTS) local.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -150,6 +169,7 @@ pub struct Config {
     pub comandos: Comandos,
     pub voz: VozCfg,
     pub escucha: Escucha,
+    pub iure: IureCfg,
     /// Token del portal RemoteDesktop para no volver a pedir permiso.
     pub token_portal: Option<String>,
 }
@@ -167,6 +187,7 @@ impl Default for Config {
             comandos: Comandos::default(),
             voz: VozCfg::default(),
             escucha: Escucha::default(),
+            iure: IureCfg::default(),
             token_portal: None,
         }
     }

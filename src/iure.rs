@@ -213,6 +213,20 @@ pub fn llamar(nombre: &str, args: Value) -> Result<String> {
     Ok(texto.chars().take(6000).collect())
 }
 
+/// Llama una herramienta y devuelve su resultado como JSON (para resúmenes hechos en código).
+pub fn consultar(nombre: &str, args: Value) -> Result<Value> {
+    let r = con_cliente(|c| rt().block_on(c.mcp.call(nombre, args)))?;
+    Ok(match r {
+        Value::String(s) => serde_json::from_str(&s).unwrap_or(Value::String(s)),
+        v => v,
+    })
+}
+
+/// ¿La instancia ofrece esta herramienta? (carga la lista si hace falta)
+pub fn ofrece(nombre: &str) -> bool {
+    con_cliente(|c| Ok(c.herramientas.iter().any(|t| t.name == nombre))).unwrap_or(false)
+}
+
 // ── estado para la ventana ───────────────────────────────────────────────────
 
 /// Lo que la sección «Iurefficient» de Ajustes muestra. Se calcula en un hilo aparte:

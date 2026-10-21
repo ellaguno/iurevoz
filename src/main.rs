@@ -18,6 +18,7 @@ mod motor;
 mod portal;
 mod procesos;
 mod puntuacion;
+mod resumen;
 mod rasgos;
 mod suite;
 mod teclas;
@@ -125,6 +126,10 @@ fn main() -> Result<()> {
             }
             // da tiempo a que el portal termine de teclear
             std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        Some("mi-dia") => {
+            // «¿qué tengo hoy?» desde la terminal (o un atajo que lo pase a `notify-send`)
+            println!("{}", resumen::mi_dia()?);
         }
         Some("decir") => {
             let texto = args.get(1).context("falta el texto")?;

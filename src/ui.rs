@@ -642,7 +642,25 @@ impl App {
             }
             use crate::iure::Estado;
             match p.estado.clone() {
-                Estado::Conectado(q) => drop(ui.label(RichText::new(format!("✔ IureVoz conectado a la instancia ({q})")).color(verde))),
+                Estado::Conectado(q) => {
+                    ui.label(RichText::new(format!("✔ IureVoz conectado a la instancia ({q})")).color(verde));
+                    let mut cambio = false;
+                    cambio |= ui
+                        .checkbox(&mut self.cfg.iure.resumen_al_iniciar, "decir «tu día» al abrir IureVoz")
+                        .on_hover_text("Citas, entregas de hoy, tareas atrasadas y notificaciones. También con «¿qué tengo hoy?»")
+                        .changed();
+                    ui.horizontal(|ui| {
+                        cambio |= ui.checkbox(&mut self.cfg.iure.avisos, "avisar vencimientos y notificaciones").changed();
+                        ui.add_enabled_ui(self.cfg.iure.avisos, |ui| {
+                            cambio |= ui.checkbox(&mut self.cfg.iure.avisos_hablados, "también en voz alta").changed();
+                            ui.label("cada");
+                            cambio |= ui.add(egui::DragValue::new(&mut self.cfg.iure.cada_minutos).range(5..=120).suffix(" min")).changed();
+                        });
+                    });
+                    if cambio {
+                        self.aplicar_config();
+                    }
+                }
                 Estado::PorConectar(q) if !self.entrada_iure.3 => {
                     ui.horizontal(|ui| {
                         if ui.button("Conectar IureVoz").on_hover_text("Crea un token de solo lectura «IureVoz» (un año, revocable en Iurefficient)").clicked() {
@@ -873,6 +891,7 @@ pub fn ejecutar(cfg: Config, sin_portal: bool) -> eframe::Result {
                 }))
             };
             let estado = crate::control::Estado::new();
+            let ctl_estado = estado.clone();
             let (tx_ctl, rx_ctl) = crossbeam_channel::unbounded::<Control>();
             let motor = Motor::iniciar(cfg.clone(), portal.clone(), voz.clone(), estado.clone(), tx_ctl.clone(), repintar.clone());
             let ctl = Controlador::iniciar(tx_ctl, rx_ctl, estado, motor.tx.clone(), voz.clone(), tx_ui.clone(), repintar.clone());
@@ -889,6 +908,15 @@ pub fn ejecutar(cfg: Config, sin_portal: bool) -> eframe::Result {
             crate::control::escuchar_socket(ctl.clone());
             if cfg.escucha.siempre {
                 ctl.enviar(Control::Vigilia(true));
+            }
+            // F5: resumen del día al abrir y avisos de Iurefficient
+            {
+                let e = ctl_estado.clone();
+                crate::resumen::arrancar(voz.clone(), move || {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    // no hablar encima de un dictado o de una instrucción
+                    e.grabando.load(Relaxed) || e.atento.load(Relaxed) || e.pendiente.lock().unwrap().is_some()
+                });
             }
             // índice de nombres de la unidad de IureDav (recorrerla es lento)
             crate::suite::indexar_en_fondo();

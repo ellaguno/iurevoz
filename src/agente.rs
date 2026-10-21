@@ -276,6 +276,14 @@ impl Agente {
     pub fn ejecutar(&self, instruccion: &str, historial: &[Value], mut paso: impl FnMut(&str)) -> Result<Informe> {
         *self.instruccion.lock().unwrap() = instruccion.to_string();
         // instancia web o apps de la suite: directo al sub-agente, sin pasar por el modelo principal
+        if self.modo == Modo::Principal && crate::resumen::es_mi_dia(instruccion) {
+            paso("resumen del día");
+            let respuesta = match crate::resumen::mi_dia() {
+                Ok(t) => t,
+                Err(e) => format!("No pude consultar Iurefficient: {}.", format!("{e:#}").trim_end_matches('.')),
+            };
+            return Ok(Informe { acciones: vec!["resumen del día".into()], respuesta });
+        }
         if self.modo == Modo::Principal && es_abrelo(instruccion) {
             let r = crate::iure::abrir_lo_ultimo();
             let texto = match &r {
