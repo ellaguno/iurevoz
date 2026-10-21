@@ -164,6 +164,8 @@ pub struct Config {
     pub puntuacion_dictada: bool,
     /// Comandos de formato Markdown al dictar («título uno», «abre negritas»…), p. ej. en IureEditor.
     pub dictado_markdown: bool,
+    /// Guardar un registro de diagnóstico en `~/.local/state/iurevoz/iurevoz.log` (incluye lo dictado).
+    pub registro: bool,
     pub inyeccion: Inyeccion,
     pub correccion: Correccion,
     pub comandos: Comandos,
@@ -182,6 +184,7 @@ impl Default for Config {
             silencio: 0.5,
             puntuacion_dictada: true,
             dictado_markdown: false,
+            registro: false,
             inyeccion: Inyeccion::Teclear,
             correccion: Correccion::default(),
             comandos: Comandos::default(),

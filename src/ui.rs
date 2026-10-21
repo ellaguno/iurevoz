@@ -409,6 +409,18 @@ impl App {
                     .changed();
                 ui.end_row();
             }
+            ui.label("Registro");
+            ui.horizontal(|ui| {
+                cambio |= ui
+                    .checkbox(&mut self.cfg.registro, "guardar un registro de diagnóstico")
+                    .on_hover_text("En ~/.local/state/iurevoz/iurevoz.log. Incluye lo que dictas y lo que oye el reconocedor; no sale de tu equipo. Vale desde el próximo arranque.")
+                    .changed();
+                if self.cfg.registro && ui.small_button("abrir carpeta").clicked() {
+                    let dir = dirs::state_dir().unwrap_or_else(crate::config::dir_datos).join("iurevoz");
+                    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+                }
+            });
+            ui.end_row();
             ui.label("Voz para Claude");
             self.fila_mcp_claude(ui);
             ui.end_row();

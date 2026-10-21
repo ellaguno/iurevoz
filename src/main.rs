@@ -206,8 +206,12 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             instalar_lanzador();
+            let cfg = Config::cargar();
+            if cfg.registro || std::env::var_os("IUREVOZ_LOG").is_some() {
+                abrir_registro();
+            }
             let sin_portal = args.iter().any(|a| a == "--sin-portal");
-            let r = ui::ejecutar(Config::cargar(), sin_portal);
+            let r = ui::ejecutar(cfg, sin_portal);
             llm_local::apagar();
             suite::apagar();
             r.map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -381,4 +385,34 @@ struct Rusage {
 
 unsafe extern "C" {
     fn getrusage(who: i32, usage: *mut Rusage) -> i32;
+}
+
+/// Registro de diagnóstico (opción de Ajustes o `IUREVOZ_LOG=1`). Abierta desde el menú, la
+/// app no tiene terminal: la salida de error se manda a `~/.local/state/iurevoz/iurevoz.log`.
+/// Desde una terminal se deja ahí. Lleva lo dictado, así que nunca sale del equipo.
+fn abrir_registro() {
+    use std::io::IsTerminal;
+    // antes de crear hilos: cambiar el entorno con hilos corriendo no es seguro
+    unsafe { std::env::set_var("IUREVOZ_LOG", "1") };
+    if std::io::stderr().is_terminal() {
+        return;
+    }
+    let dir = dirs::state_dir().unwrap_or_else(|| config::dir_datos()).join("iurevoz");
+    let _ = std::fs::create_dir_all(&dir);
+    let ruta = dir.join("iurevoz.log");
+    // uno anterior queda como .1 si creció mucho
+    if std::fs::metadata(&ruta).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
+        let _ = std::fs::rename(&ruta, dir.join("iurevoz.log.1"));
+    }
+    let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&ruta) else { return };
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&ruta, std::fs::Permissions::from_mode(0o600));
+    }
+    use std::os::fd::AsRawFd;
+    unsafe {
+        libc::dup2(f.as_raw_fd(), 1);
+        libc::dup2(f.as_raw_fd(), 2);
+    }
+    eprintln!("\n=== IureVoz {} · {} ===", env!("CARGO_PKG_VERSION"), chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
 }
