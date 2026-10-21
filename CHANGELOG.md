@@ -3,6 +3,18 @@
 Versiones de IureVoz. El flujo `.github/workflows/release.yml` toma las notas de la
 sección `## vX.Y.Z` al subir la etiqueta.
 
+## v0.2.0 — 2026-10-21
+
+### Añadido
+- **Ícono en la barra superior** con el estado: gris inactivo, verde esperando «oye
+  compu», rojo dictando y azul escuchando una instrucción. Su menú muestra la ventana,
+  empieza o detiene el dictado, enciende o apaga «oye compu» y sale.
+- **Abrir al iniciar la sesión** (*Ajustes → Inicio*), minimizado y con su ícono.
+
+### Cambiado
+- Con el ícono en la barra, cerrar la ventana la minimiza: IureVoz sigue escuchando.
+  «Salir» del menú del ícono lo termina.
+
 ## v0.1.0 — 2026-10-21
 
 Primera versión publicada, para Linux con GNOME en Wayland (paquete .deb).
