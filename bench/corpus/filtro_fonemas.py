@@ -100,7 +100,14 @@ def datos_espeak():
 
 
 def esperado(texto: str) -> str:
-    from piper_phonemize import phonemize_espeak
+    """Fonemas de espeak-ng es-419: con piper_phonemize si está (solo hay paquetes hasta
+    Python 3.11) o, si no, con el comando `espeak-ng` del sistema (apt install espeak-ng)."""
+    try:
+        from piper_phonemize import phonemize_espeak
+    except ImportError:
+        import subprocess
+        r = subprocess.run(["espeak-ng", "-q", "--ipa", "-v", "es-419", texto], capture_output=True, text=True, check=True)
+        return " ".join(r.stdout.split())
     return " ".join("".join(o) for o in phonemize_espeak(texto, "es-419", data_path=datos_espeak()))
 
 
