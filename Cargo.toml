@@ -2,6 +2,10 @@
 name = "iurevoz"
 version = "0.1.0"
 edition = "2024"
+description = "Dictado y órdenes por voz para Linux (GNOME), local; parte de la suite Iurefficient"
+license = "Proprietary"
+authors = ["Eduardo Llaguno <eduardo@llaguno.com>"]
+homepage = "https://github.com/ellaguno/iurevoz"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -31,3 +35,19 @@ tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "time", "
 toml = "1.1.8"
 ureq = { version = "3.4.2", features = ["json"] }
 xkbcommon = { version = "0.9.0", default-features = false }
+
+# `cargo deb`: paquete para Ubuntu/Debian (los modelos se descargan al primer uso)
+[package.metadata.deb]
+maintainer = "Eduardo Llaguno <eduardo@llaguno.com>"
+section = "utils"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+IureVoz dicta en cualquier ventana y entiende órdenes por voz. El reconocimiento \
+corre en el equipo (Nemotron o Moonshine con sherpa-onnx); las órdenes usan un LLM \
+local o el que se configure. Requiere GNOME en Wayland (portal RemoteDesktop)."""
+assets = [
+    ["target/release/iurevoz", "usr/bin/", "755"],
+    ["packaging/mx.iurefficient.IureVoz.desktop", "usr/share/applications/", "644"],
+    ["README.md", "usr/share/doc/iurevoz/README.md", "644"],
+]

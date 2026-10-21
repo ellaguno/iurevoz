@@ -227,6 +227,12 @@ fn instalar_lanzador() {
     let Some(dir) = dirs::data_dir().map(|d| d.join("applications")) else { return };
     let Ok(exe) = std::env::current_exe() else { return };
     let ruta = dir.join(format!("{}.desktop", config::APP_ID));
+    // instalado con el .deb: manda el lanzador del sistema (/usr/share/applications); uno de
+    // usuario de una compilación de desarrollo lo taparía en el menú
+    if exe.starts_with("/usr/") {
+        let _ = std::fs::remove_file(&ruta);
+        return;
+    }
     let contenido = format!(
         "[Desktop Entry]\nType=Application\nName=IureVoz\nComment=Dictado por voz local\n\
          Exec={}\nIcon=audio-input-microphone\nCategories=Utility;Accessibility;\nTerminal=false\n",

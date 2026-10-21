@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=IureVoz
+Comment=Dictado y órdenes por voz, local
+Exec=/usr/bin/iurevoz
+Icon=audio-input-microphone
+Categories=Utility;Accessibility;
+Keywords=voz;dictado;voice;dictation;
+Terminal=false
+StartupWMClass=iurevoz

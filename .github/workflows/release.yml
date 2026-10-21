@@ -1,0 +1,46 @@
+# Al subir una etiqueta vX.Y.Z: compila en Ubuntu 24.04 (glibc 2.39, para que el .deb
+# instale también en sistemas no tan nuevos), arma el .deb con cargo-deb y publica la
+# versión con las notas de la sección `## vX.Y.Z` del CHANGELOG.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: La etiqueta coincide con Cargo.toml
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          test "v$v" = "$GITHUB_REF_NAME" || { echo "Cargo.toml dice $v y la etiqueta $GITHUB_REF_NAME"; exit 1; }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Dependencias del sistema
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compilar
+        run: cargo build --release --locked
+
+      - name: Paquete .deb
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb --no-build
+          ls -la target/debian
+
+      - name: Publicar
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          awk -v t="## $GITHUB_REF_NAME" 'index($0, t) == 1 {f=1; next} /^## v/ {f=0} f' CHANGELOG.md > notas.md
+          gh release create "$GITHUB_REF_NAME" target/debian/*.deb \
+            --title "IureVoz ${GITHUB_REF_NAME#v}" --notes-file notas.md
