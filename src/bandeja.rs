@@ -1,0 +1,288 @@
+//! Ícono en la barra superior de GNOME (StatusNotifierItem; lo muestra la extensión
+//! AppIndicator de Ubuntu). El color dice qué hace IureVoz: gris inactivo, verde con la
+//! oreja abierta a «oye compu», rojo dictando y azul escuchando una instrucción.
+//!
+//! En Wayland una app no puede esconder ni volver a mostrar su ventana por su cuenta: al
+//! cerrarla se minimiza (sigue aquí) y «Salir» del menú es lo que la termina.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use eframe::egui;
+use ksni::TrayMethods;
+
+use crate::control::{Control, Controlador};
+
+/// El ícono está en la barra: cerrar la ventana la minimiza en vez de salir.
+pub static ACTIVA: AtomicBool = AtomicBool::new(false);
+/// Se pidió salir desde el menú: el cierre ya no se intercepta.
+pub static SALIENDO: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Modo {
+    Inactivo,
+    Escuchando,
+    Dictando,
+    Comando,
+}
+
+impl Modo {
+    fn de(ctl: &Controlador) -> Self {
+        let e = &ctl.estado;
+        if e.grabando.load(Ordering::Relaxed) {
+            Modo::Dictando
+        } else if e.modo_comando.load(Ordering::Relaxed)
+            || e.pendiente.lock().unwrap().is_some()
+            || e.captura.lock().unwrap().is_some()
+        {
+            Modo::Comando
+        } else if e.vigilia.load(Ordering::Relaxed) {
+            Modo::Escuchando
+        } else {
+            Modo::Inactivo
+        }
+    }
+
+    fn texto(self) -> &'static str {
+        match self {
+            Modo::Inactivo => "Inactivo",
+            Modo::Escuchando => "Esperando «oye compu»",
+            Modo::Dictando => "Dictando",
+            Modo::Comando => "Escuchando una instrucción",
+        }
+    }
+
+    /// Color del círculo (r, g, b).
+    fn color(self) -> (u8, u8, u8) {
+        match self {
+            Modo::Inactivo => (0x77, 0x76, 0x7b),
+            Modo::Escuchando => (0x2e, 0xc2, 0x7e),
+            Modo::Dictando => (0xe0, 0x1b, 0x24),
+            Modo::Comando => (0x35, 0x84, 0xe4),
+        }
+    }
+}
+
+/// Distancia de `p` al segmento a–b.
+fn segmento(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (px, py) = (p.0 - a.0, p.1 - a.1);
+    let (bx, by) = (b.0 - a.0, b.1 - a.1);
+    let h = ((px * bx + py * by) / (bx * bx + by * by)).clamp(0.0, 1.0);
+    ((px - bx * h).powi(2) + (py - by * h).powi(2)).sqrt()
+}
+
+/// Círculo del color del modo con un micrófono blanco, en ARGB32 (orden de red) como
+/// lo pide StatusNotifierItem. Se dibuja con distancias, con bordes suavizados.
+pub fn icono(modo: Modo, lado: i32) -> ksni::Icon {
+    let (r, g, b) = modo.color();
+    let n = lado as f32;
+    let cubre = |d: f32| (0.5 - d * n).clamp(0.0, 1.0);
+    let mut data = Vec::with_capacity((lado * lado * 4) as usize);
+    for y in 0..lado {
+        for x in 0..lado {
+            let p = ((x as f32 + 0.5) / n, (y as f32 + 0.5) / n);
+            let fondo = cubre(((p.0 - 0.5).powi(2) + (p.1 - 0.5).powi(2)).sqrt() - 0.48);
+            // cápsula, soporte en U, pie y base
+            let capsula = segmento(p, (0.5, 0.30), (0.5, 0.47)) - 0.105;
+            let radio = ((p.0 - 0.5).powi(2) + (p.1 - 0.47).powi(2)).sqrt();
+            let u = if p.1 >= 0.47 { (radio - 0.19).abs() - 0.035 } else { 1.0 };
+            let pie = segmento(p, (0.5, 0.66), (0.5, 0.76)) - 0.035;
+            let base = segmento(p, (0.38, 0.77), (0.62, 0.77)) - 0.035;
+            let mic = cubre(capsula.min(u).min(pie).min(base)).min(fondo);
+            let mezcla = |c: u8| (c as f32 * (1.0 - mic) + 255.0 * mic).round() as u8;
+            data.extend_from_slice(&[(fondo * 255.0).round() as u8, mezcla(r), mezcla(g), mezcla(b)]);
+        }
+    }
+    ksni::Icon { width: lado, height: lado, data }
+}
+
+struct Bandeja {
+    modo: Modo,
+    ctl: Controlador,
+    ctx: egui::Context,
+}
+
+impl Bandeja {
+    fn mostrar(&self) {
+        // en Wayland GNOME puede responder con un aviso «IureVoz está listo» en vez de traerla
+        self.ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        self.ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        self.ctx.request_repaint();
+    }
+}
+
+impl ksni::Tray for Bandeja {
+    fn id(&self) -> String {
+        "iurevoz".into()
+    }
+
+    fn title(&self) -> String {
+        "IureVoz".into()
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        vec![icono(self.modo, 22), icono(self.modo, 32), icono(self.modo, 48)]
+    }
+
+    fn tool_tip(&self) -> ksni::ToolTip {
+        ksni::ToolTip { title: "IureVoz".into(), description: self.modo.texto().into(), ..Default::default() }
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        self.mostrar();
+    }
+
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::{CheckmarkItem, StandardItem};
+        let dictando = self.modo == Modo::Dictando;
+        let escuchando = self.ctl.estado.vigilia.load(Ordering::Relaxed);
+        vec![
+            StandardItem {
+                label: self.modo.texto().into(),
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
+            ksni::MenuItem::Separator,
+            StandardItem {
+                label: "Mostrar IureVoz".into(),
+                activate: Box::new(|t: &mut Self| t.mostrar()),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: if dictando { "Detener el dictado".into() } else { "Dictar".into() },
+                activate: Box::new(move |t: &mut Self| t.ctl.enviar(Control::Dictar(!dictando))),
+                ..Default::default()
+            }
+            .into(),
+            CheckmarkItem {
+                label: "Escuchar «oye compu»".into(),
+                checked: escuchando,
+                activate: Box::new(move |t: &mut Self| t.ctl.enviar(Control::Vigilia(!escuchando))),
+                ..Default::default()
+            }
+            .into(),
+            ksni::MenuItem::Separator,
+            StandardItem {
+                label: "Salir".into(),
+                icon_name: "application-exit".into(),
+                activate: Box::new(|t: &mut Self| salir(&t.ctx)),
+                ..Default::default()
+            }
+            .into(),
+        ]
+    }
+}
+
+/// Cierra la ventana; si está minimizada en Wayland puede no procesar la orden, así que
+/// después de un momento se termina el proceso (los auxiliares mueren con él).
+fn salir(ctx: &egui::Context) {
+    SALIENDO.store(true, Ordering::Relaxed);
+    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    ctx.request_repaint();
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(1500));
+        crate::llm_local::apagar();
+        crate::suite::apagar();
+        std::process::exit(0);
+    });
+}
+
+/// Pone el ícono y lo mantiene al día con el estado. Sin extensión de indicadores no hay
+/// ícono y la ventana se comporta como siempre.
+pub fn iniciar(ctl: Controlador, ctx: egui::Context) {
+    std::thread::Builder::new()
+        .name("bandeja".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(rt) => rt,
+                Err(e) => return eprintln!("bandeja: {e}"),
+            };
+            rt.block_on(async move {
+                let modo = Modo::de(&ctl);
+                let h = match (Bandeja { modo, ctl: ctl.clone(), ctx }).spawn().await {
+                    Ok(h) => h,
+                    Err(e) => return eprintln!("bandeja: sin ícono ({e})"),
+                };
+                ACTIVA.store(true, Ordering::Relaxed);
+                let mut antes = (modo, ctl.estado.vigilia.load(Ordering::Relaxed));
+                loop {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    let ahora = (Modo::de(&ctl), ctl.estado.vigilia.load(Ordering::Relaxed));
+                    if ahora != antes {
+                        antes = ahora;
+                        if h.update(|t| t.modo = ahora.0).await.is_none() {
+                            break;
+                        }
+                    }
+                }
+            });
+        })
+        .expect("hilo bandeja");
+}
+
+/// Arranque con la sesión: `~/.config/autostart/mx.iurefficient.IureVoz.desktop`.
+pub mod arranque {
+    use std::path::PathBuf;
+
+    fn ruta() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join("autostart").join(format!("{}.desktop", crate::config::APP_ID)))
+    }
+
+    pub fn activo() -> bool {
+        ruta().is_some_and(|r| r.exists())
+    }
+
+    /// Crea o quita la entrada. Arranca minimizado (`--autoarranque`).
+    pub fn fijar(si: bool) -> anyhow::Result<()> {
+        let r = ruta().ok_or_else(|| anyhow::anyhow!("no encuentro ~/.config"))?;
+        if !si {
+            if r.exists() {
+                std::fs::remove_file(&r)?;
+            }
+            return Ok(());
+        }
+        let exe = std::env::current_exe()?;
+        if let Some(d) = r.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::write(
+            &r,
+            format!(
+                "[Desktop Entry]\nType=Application\nName=IureVoz\nComment=Dictado y órdenes por voz\n\
+                 Exec={} --autoarranque\nIcon=audio-input-microphone\nTerminal=false\n\
+                 X-GNOME-Autostart-enabled=true\nX-GNOME-Autostart-Delay=5\n",
+                exe.display()
+            ),
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    /// `IUREVOZ_ICONOS=dir cargo test -- --ignored volcar_iconos` deja los íconos en crudo (ARGB).
+    #[test]
+    #[ignore]
+    fn volcar_iconos() {
+        let dir = std::env::var("IUREVOZ_ICONOS").unwrap();
+        for (n, m) in [("inactivo", Modo::Inactivo), ("escuchando", Modo::Escuchando), ("dictando", Modo::Dictando), ("comando", Modo::Comando)] {
+            std::fs::write(format!("{dir}/{n}.argb"), icono(m, 48).data).unwrap();
+        }
+    }
+
+    #[test]
+    fn iconos_del_tamano_pedido() {
+        for m in [Modo::Inactivo, Modo::Escuchando, Modo::Dictando, Modo::Comando] {
+            let i = icono(m, 22);
+            assert_eq!(i.data.len(), 22 * 22 * 4);
+            // esquina transparente, centro opaco
+            assert_eq!(i.data[0], 0);
+            let c = ((11 * 22 + 11) * 4) as usize;
+            assert_eq!(i.data[c], 255);
+        }
+    }
+}

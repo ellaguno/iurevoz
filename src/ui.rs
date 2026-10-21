@@ -63,6 +63,10 @@ pub struct App {
     renovar_iure: bool,
     /// Formulario para entrar a Iurefficient: (contraseña, código, pide código, visible).
     entrada_iure: (String, String, bool, bool),
+    /// Minimizar en el primer cuadro (arranque con la sesión).
+    minimizar: bool,
+    /// Hay entrada en ~/.config/autostart.
+    con_la_sesion: bool,
     /// F6b: ¿IureVoz está registrado como servidor MCP en Claude Code? y registro en curso.
     mcp_claude: (bool, Option<crossbeam_channel::Receiver<Result<String, String>>>),
     /// Mensajes del entrenamiento del detector en curso.
@@ -94,6 +98,8 @@ impl App {
             esperando_comando: false,
             atajos_gnome: crate::atajos_gnome::instalados(),
             renovar_iure: false,
+            minimizar: false,
+            con_la_sesion: crate::bandeja::arranque::activo(),
             mcp_claude: (crate::mcp_voz::registrado_en_claude_code(), None),
             entrada_iure: Default::default(),
             entrenando: None,
@@ -409,6 +415,17 @@ impl App {
                     .changed();
                 ui.end_row();
             }
+            ui.label("Inicio");
+            if ui
+                .checkbox(&mut self.con_la_sesion, "abrir IureVoz al iniciar la sesión (minimizado, con su ícono arriba)")
+                .changed()
+            {
+                if let Err(e) = crate::bandeja::arranque::fijar(self.con_la_sesion) {
+                    self.error = Some(format!("arranque con la sesión: {e:#}"));
+                    self.con_la_sesion = crate::bandeja::arranque::activo();
+                }
+            }
+            ui.end_row();
             ui.label("Registro");
             ui.horizontal(|ui| {
                 cambio |= ui
@@ -861,6 +878,18 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if std::mem::take(&mut self.minimizar) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+        // con el ícono en la barra, cerrar la ventana la minimiza: IureVoz sigue escuchando.
+        // «Salir» del menú del ícono es lo que la termina.
+        if ui.ctx().input(|i| i.viewport().close_requested())
+            && crate::bandeja::ACTIVA.load(Ordering::Relaxed)
+            && !crate::bandeja::SALIENDO.load(Ordering::Relaxed)
+        {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
         self.procesar_eventos();
         if ui.input(|i| i.key_pressed(egui::Key::F9)) {
             self.alternar();
@@ -911,7 +940,7 @@ impl eframe::App for App {
 }
 
 /// Construye todo y abre la ventana.
-pub fn ejecutar(cfg: Config, sin_portal: bool) -> eframe::Result {
+pub fn ejecutar(cfg: Config, sin_portal: bool, minimizada: bool) -> eframe::Result {
     let opciones = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("IureVoz")
@@ -985,7 +1014,11 @@ pub fn ejecutar(cfg: Config, sin_portal: bool) -> eframe::Result {
                     }
                 });
             }
-            Ok(Box::new(App::new(cfg, motor, ctl, rx_ui, portal, voz)))
+            // ícono en la barra superior, con el estado (dictando, instrucción, «oye compu»)
+            crate::bandeja::iniciar(ctl.clone(), cc.egui_ctx.clone());
+            let mut app = App::new(cfg, motor, ctl, rx_ui, portal, voz);
+            app.minimizar = minimizada;
+            Ok(Box::new(app))
         }),
     )
 }

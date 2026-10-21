@@ -4,6 +4,7 @@ mod agente;
 mod asr;
 mod atajos_gnome;
 mod audio;
+mod bandeja;
 mod claude;
 mod config;
 mod control;
@@ -203,8 +204,13 @@ fn main() -> Result<()> {
         }
         Some(otro) if !otro.starts_with("--") => bail!("subcomando desconocido: {otro} (ver iurevoz --help)"),
         _ => {
-            if control::enviar_a_instancia("alternar") {
-                // ya hay una ventana abierta: el segundo arranque funciona como atajo
+            let autoarranque = args.iter().any(|a| a == "--autoarranque");
+            // ya hay una ventana abierta: el segundo arranque funciona como atajo (salvo el de
+            // la sesión, que no debe ponerse a dictar)
+            if autoarranque && control::instancia_abierta() {
+                return Ok(());
+            }
+            if !autoarranque && control::enviar_a_instancia("alternar") {
                 return Ok(());
             }
             instalar_lanzador();
@@ -213,7 +219,7 @@ fn main() -> Result<()> {
                 abrir_registro();
             }
             let sin_portal = args.iter().any(|a| a == "--sin-portal");
-            let r = ui::ejecutar(cfg, sin_portal);
+            let r = ui::ejecutar(cfg, sin_portal, autoarranque);
             llm_local::apagar();
             suite::apagar();
             r.map_err(|e| anyhow::anyhow!("{e}"))?;

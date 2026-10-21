@@ -418,6 +418,11 @@ pub fn preguntar_a_instancia(orden: &str, espera: std::time::Duration) -> Option
     Some(r)
 }
 
+/// ¿Hay una instancia escuchando en el socket?
+pub fn instancia_abierta() -> bool {
+    UnixStream::connect(ruta_socket()).is_ok()
+}
+
 /// Envía una orden a la instancia en marcha. Devuelve false si no hay ninguna.
 pub fn enviar_a_instancia(orden: &str) -> bool {
     match UnixStream::connect(ruta_socket()) {
