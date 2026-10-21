@@ -85,7 +85,15 @@ fn cierra_oracion(s: &str) -> bool {
 }
 
 fn limpia(p: &str) -> String {
-    p.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
+    let w = p.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    // plurales y lo que suele oír el reconocedor («Vinientas numeradas»): cuentan como el comando
+    match w.as_str() {
+        "viñetas" | "vinietas" | "vinieta" | "vinientas" | "vinienta" | "vineta" | "vinetas" | "viñieta" | "biñeta" | "biñetas" => {
+            "viñeta".into()
+        }
+        "numeradas" | "numerado" | "numerados" => "numerada".into(),
+        _ => w,
+    }
 }
 
 fn mayuscula_inicial(s: &str) -> String {
@@ -223,7 +231,7 @@ fn es_sustantivo(limpias: &[String], i: usize, n: usize) -> bool {
     let previa = i.checked_sub(1).map(|j| limpias[j].as_str());
     let siguiente = limpias.get(i + n).map(|s| s.as_str());
     // para comandos de varias palabras solo cuentan los artículos: «primero punto y coma» sí es comando
-    let articulos = ["el", "la", "un", "una", "este", "esta", "ese", "esa", "del", "al"];
+    let articulos = ["el", "la", "los", "las", "un", "una", "unos", "unas", "este", "esta", "ese", "esa", "del", "al"];
     let det = if n == 1 { DETERMINANTES } else { &articulos[..] };
     previa.is_some_and(|p| det.contains(&p)) || (n == 1 && matches!(siguiente, Some("de" | "del" | "medio")))
 }
@@ -303,6 +311,13 @@ mod pruebas {
         let mut p = Puntuador::new();
         assert_eq!(p.procesar("elementos dos puntos viñeta numerada uno", true), "Elementos:\n1. Uno");
         assert_eq!(p.procesar("viñeta numerada dos", true), "\n2. Dos");
+        // plurales y variantes del reconocedor
+        assert_eq!(p.procesar("Vinientas numeradas tres", true), "\n3. Tres");
+        assert_eq!(Puntuador::new().procesar("viñetas comprar pan", true), "\n- Comprar pan");
+        assert_eq!(
+            Puntuador::new().procesar("si bien las viñetas numeradas no me han funcionado", true),
+            "Si bien las viñetas numeradas no me han funcionado"
+        );
         assert_eq!(p.procesar("fin punto y aparte viñeta numerada otra", true), " fin.\n\n1. Otra");
     }
 
