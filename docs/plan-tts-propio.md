@@ -61,7 +61,7 @@ No existe un corpus es-MX de un solo locutor, con calidad de estudio y licencia 
 |---|---|---|
 | **T0 · Banco de pruebas** ✅ | `bench/tts_bench.py` + `bench/frases_tts.tsv` (30 frases de dominio): RTF y CER con Moonshine, `--wavs` para audio de otros modelos, `--normalizar`, `--mos` opcional. Falta integrar la similitud de locutor (se midió aparte con CAM++ de sherpa-onnx) | Local, gratis |
 | **T1 · Normalizador de texto** ✅ | `src/normalizar.rs`, usado por `voz::para_hablar`. Bajó el CER de Piper claude de 4.7 a 2.7 % y el de Supertonic de 5.1 a 2.8 % | Local, gratis |
-| **T2 · Elegir maestro** (en curso) | Generar las 30 frases con Chatterbox es-mx-latam y Qwen3-TTS clonando la voz del usuario (en CPU: no caben en la P1000 junto a IureTranscribe). Escucharlas y pasarlas por T0 | Local, gratis |
+| **T2 · Elegir maestro** (falta escuchar) | Generar las 30 frases con Chatterbox es-mx-latam y Qwen3-TTS clonando la voz del usuario (en CPU: no caben en la P1000 junto a IureTranscribe). Escucharlas y pasarlas por T0 | Local, gratis |
 | **T3 · Guion** | Unas 3,000 frases: selección greedy por cobertura de difonos sobre texto propio o de dominio público, más vocabulario jurídico, números y preguntas/exclamaciones | Local |
 | **T4 · Corpus** | Sintético con el maestro (GPU rentada) y/o grabación del locutor. Limpieza, recorte de silencios y verificación con ASR (se descartan las frases cuyo CER supere un umbral) | ~5–20 USD de GPU; locutor aparte |
 | **T5 · Entrenar** | Afinar Piper medium desde es_MX-ald. En paralelo, Matcha | GPU de 24 GB rentada, ~1 día: ~20–100 USD |
@@ -84,7 +84,11 @@ Flujo resultante: grabación limpia del usuario (~1–2 min de referencia) → e
   - CER 1.6 %, el mejor de todos.
   - Similitud de locutor 0.79 contra un techo de 0.91 (clips reales entre sí); las voces actuales dan 0.0–0.2.
   - En CPU tarda 14–23× tiempo real, así que el corpus se genera en GPU rentada.
-- **Qwen3-TTS 0.6B:** en evaluación.
+- **Qwen3-TTS 0.6B clonando al usuario** (misma referencia y texto):
+  - CER 1.1 %; sus dos únicos «errores» son de formato del ASR («10.30»).
+  - Similitud 0.81, un poco mayor que la de Chatterbox.
+  - En CPU tarda 13–18× tiempo real. Apache-2.0 y sin marca de agua.
+  - Los dos maestros sirven; falta que el usuario elija de oído. Las muestras están en `muestras-voz/comparacion-maestros/`.
 
 ## Pendiente
 
