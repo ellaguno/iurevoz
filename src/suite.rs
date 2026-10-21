@@ -314,9 +314,28 @@ pub fn editor_inserta() -> bool {
     if std::env::var_os("IUREVOZ_EDITOR_INSERTA").is_some() {
         return true;
     }
-    let Ok(out) = Command::new("dpkg-query").args(["-W", "-f=${Version}", "iureditor"]).output() else { return false };
+    version_editor().is_some_and(|v| v > (1, 11, 2))
+}
+
+/// Versión del IureEditor instalado (del paquete), p. ej. (1, 12, 1).
+fn version_editor() -> Option<(u32, u32, u32)> {
+    let out = Command::new("dpkg-query").args(["-W", "-f=${Version}", "iureditor"]).output().ok()?;
     let v: Vec<u32> = String::from_utf8_lossy(&out.stdout).split(['.', '-', '~']).take(3).filter_map(|x| x.parse().ok()).collect();
-    v.len() == 3 && (v[0], v[1], v[2]) > (1, 11, 2)
+    (v.len() == 3).then(|| (v[0], v[1], v[2]))
+}
+
+/// Edición mínima en `doc` (enlace `iureditor://edit`, desde la 1.13.0).
+pub fn editar_en_editor(doc: &Path, e: crate::puntuacion::Edicion) -> Result<()> {
+    if std::env::var_os("IUREVOZ_EDITOR_INSERTA").is_none() && version_editor().is_some_and(|v| v < (1, 13, 0)) {
+        bail!("para borrar o deshacer por voz hace falta IureEditor 1.13.0 o posterior");
+    }
+    let exe = apps::locate(apps::def(AppId::Editor)).context("IureEditor no está instalado")?;
+    let enlace = format!("iureditor://edit?path={}&action={}", codificar(&doc.to_string_lossy()), e.accion());
+    let st = Command::new(exe).arg(enlace).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    if !st.success() {
+        bail!("no aceptó la orden ({st})");
+    }
+    Ok(())
 }
 
 /// Inserta texto en el cursor de `doc` en IureEditor ya abierto (enlace `iureditor://insert`).

@@ -84,6 +84,63 @@ fn cierra_oracion(s: &str) -> bool {
     s.ends_with(' ') || matches!(s.trim_end_matches([' ', '”', ')']).chars().last(), Some('.' | '?' | '!' | '…' | '\n'))
 }
 
+/// Órdenes de edición mínima al dictar: «borra la palabra», «borra la línea», «deshaz».
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edicion {
+    BorrarPalabra,
+    BorrarLinea,
+    Deshacer,
+}
+
+impl Edicion {
+    /// Nombre en el enlace `iureditor://edit?action=…`.
+    pub fn accion(self) -> &'static str {
+        match self {
+            Edicion::BorrarPalabra => "delete-word",
+            Edicion::BorrarLinea => "delete-line",
+            Edicion::Deshacer => "undo",
+        }
+    }
+
+    pub fn desde_accion(a: &str) -> Option<Self> {
+        [Edicion::BorrarPalabra, Edicion::BorrarLinea, Edicion::Deshacer].into_iter().find(|e| e.accion() == a)
+    }
+
+    pub fn hecho(self) -> &'static str {
+        match self {
+            Edicion::BorrarPalabra => "Borré la palabra.",
+            Edicion::BorrarLinea => "Borré la línea.",
+            Edicion::Deshacer => "Deshice lo último.",
+        }
+    }
+}
+
+/// ¿La frase entera es una orden de edición? Solo frases cortas, para que «borra la línea
+/// de crédito del contrato» siga siendo texto.
+pub fn edicion_dictada(frase: &str) -> Option<Edicion> {
+    let p: Vec<String> = frase.split_whitespace().map(limpia).filter(|w| !w.is_empty()).collect();
+    if p.is_empty() || p.len() > 4 {
+        return None;
+    }
+    let t = p.join(" ");
+    const PALABRA: &[&str] = &["borra la palabra", "borrar palabra", "borra palabra", "borra la última palabra", "borrar la palabra", "borra esa palabra"];
+    const LINEA: &[&str] = &[
+        "borra la línea", "borrar línea", "borra línea", "borrar la línea", "borra la última línea", "borra el renglón",
+        "borra el párrafo", "borra la frase", "borra esa línea",
+    ];
+    const DESHACER: &[&str] = &["deshaz", "deshacer", "deshazlo", "deshaz eso", "deshacer eso"];
+    let es = |l: &[&str]| l.iter().any(|f| t == *f);
+    if es(PALABRA) {
+        Some(Edicion::BorrarPalabra)
+    } else if es(LINEA) {
+        Some(Edicion::BorrarLinea)
+    } else if es(DESHACER) {
+        Some(Edicion::Deshacer)
+    } else {
+        None
+    }
+}
+
 fn limpia(p: &str) -> String {
     let w = p.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
     // plurales y lo que suele oír el reconocedor («Vinientas numeradas»): cuentan como el comando
@@ -145,7 +202,18 @@ impl Puntuador {
     /// que haga falta para continuar lo anterior.
     pub fn procesar(&mut self, frase: &str, dictada: bool) -> String {
         let palabras: Vec<&str> = frase.split_whitespace().collect();
-        let limpias: Vec<String> = palabras.iter().map(|p| limpia(p)).collect();
+        let mut limpias: Vec<String> = palabras.iter().map(|p| limpia(p)).collect();
+        // al inicio de la frase, algo a una letra de «viñeta(s)» es el comando («Viñtas», «Piñeta»);
+        // en medio de la frase no, para no convertir palabras parecidas
+        if dictada {
+            if let Some(w) = limpias.first_mut() {
+                let sin_tilde = |s: &str| s.replace('ñ', "n").chars().collect::<Vec<char>>();
+                let w2 = sin_tilde(w);
+                if ["vineta", "vinetas"].iter().any(|v| distancia(&w2, &sin_tilde(v)) <= 1) {
+                    *w = "viñeta".into();
+                }
+            }
+        }
         // piezas: (texto, es_signo)
         let mut piezas: Vec<(String, bool)> = Vec::new();
         // Un comando exacto de varias palabras gana, salvo que la frase entera se parezca a uno
@@ -313,12 +381,25 @@ mod pruebas {
         assert_eq!(p.procesar("viñeta numerada dos", true), "\n2. Dos");
         // plurales y variantes del reconocedor
         assert_eq!(p.procesar("Vinientas numeradas tres", true), "\n3. Tres");
+        assert_eq!(Puntuador::new().procesar("Viñtas", true), "\n- ");
+        assert_eq!(Puntuador::new().procesar("Piñeta.", true), "\n- ");
+        assert_eq!(Puntuador::new().procesar("una piñata enorme", true), "Una piñata enorme");
         assert_eq!(Puntuador::new().procesar("viñetas comprar pan", true), "\n- Comprar pan");
         assert_eq!(
             Puntuador::new().procesar("si bien las viñetas numeradas no me han funcionado", true),
             "Si bien las viñetas numeradas no me han funcionado"
         );
         assert_eq!(p.procesar("fin punto y aparte viñeta numerada otra", true), " fin.\n\n1. Otra");
+    }
+
+    #[test]
+    fn ordenes_de_edicion() {
+        assert_eq!(edicion_dictada("Borra la palabra."), Some(Edicion::BorrarPalabra));
+        assert_eq!(edicion_dictada("borrar línea"), Some(Edicion::BorrarLinea));
+        assert_eq!(edicion_dictada("Deshaz"), Some(Edicion::Deshacer));
+        assert_eq!(edicion_dictada("borra la línea de crédito del contrato"), None);
+        assert_eq!(edicion_dictada("la palabra"), None);
+        assert_eq!(Edicion::desde_accion("delete-line"), Some(Edicion::BorrarLinea));
     }
 
     #[test]

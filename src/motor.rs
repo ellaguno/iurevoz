@@ -146,6 +146,27 @@ fn para_claude(instruccion: &str) -> Option<String> {
 /// Tiempo máximo esperando una instrucción que no empieza.
 const ESPERA_INSTRUCCION: std::time::Duration = std::time::Duration::from_secs(8);
 
+/// Marca al inicio de lo que va a la salida: no es texto sino una orden de edición.
+const EDITAR: char = '\u{1b}';
+
+/// Edición con el teclado en la ventana activa (fuera de IureEditor).
+fn editar_con_teclas(p: &Portal, e: crate::puntuacion::Edicion) {
+    use crate::puntuacion::Edicion;
+    const CTRL: u32 = 0xffe3;
+    const SHIFT: u32 = 0xffe1;
+    const RETROCESO: u32 = 0xff08;
+    const INICIO: u32 = 0xff50;
+    const Z: u32 = 0x7a;
+    match e {
+        Edicion::BorrarPalabra => p.teclas(vec![CTRL, RETROCESO]),
+        Edicion::BorrarLinea => {
+            p.teclas(vec![SHIFT, INICIO]);
+            p.teclas(vec![RETROCESO]);
+        }
+        Edicion::Deshacer => p.teclas(vec![CTRL, Z]),
+    }
+}
+
 /// ¿El texto es solo (parte de) la palabra clave? «Oye», «Oye, compu», «compu».
 fn solo_palabra_clave(texto: &str, palabra: &str) -> bool {
     let clave = crate::correccion::palabras(palabra);
@@ -283,6 +304,16 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                         if crate::correccion::palabras(&resto).len() <= 6 && crate::agente::es_fin_dictado(&resto) {
                             ev.enviar(Evento::Estado("Dictado terminado.".into()));
                             let _ = rutas.control.send(Control::Dictar(false));
+                            continue;
+                        }
+                    }
+                    // «borra la palabra», «borra la línea», «deshaz»: edición, no texto
+                    {
+                        let resto = crate::vigilia::quitar(&t, palabra, cfg.escucha.tolerancia.max(0.5)).unwrap_or_else(|| t.clone());
+                        if let Some(e) = crate::puntuacion::edicion_dictada(&resto) {
+                            ev.enviar(Evento::Estado(e.hecho().into()));
+                            *id += 1;
+                            let _ = rutas.salida.send((*id, format!("{EDITAR}{}", e.accion()), cfg.clone()));
                             continue;
                         }
                     }
@@ -694,6 +725,19 @@ fn hilo_salida(
     // lo ya entregado, como contexto para la siguiente corrección
     let mut contexto = String::new();
     for (id, texto, cfg) in rx {
+        // orden de edición (no texto): al documento de IureEditor por enlace, o como teclas
+        if let Some(accion) = texto.strip_prefix(EDITAR) {
+            let Some(e) = crate::puntuacion::Edicion::desde_accion(accion) else { continue };
+            let doc = destino.lock().unwrap().clone();
+            if let Some(doc) = doc {
+                if let Err(err) = crate::suite::editar_en_editor(&doc, e) {
+                    ev.enviar(Evento::Error(format!("IureEditor: {err:#}")));
+                }
+            } else if let Some(p) = &portal {
+                editar_con_teclas(p, e);
+            }
+            continue;
+        }
         let mut final_ = texto.clone();
         if cfg.correccion.activa {
             let c = &cfg.correccion;
