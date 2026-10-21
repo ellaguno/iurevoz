@@ -1,0 +1,57 @@
+# Guion de grabación de la voz propia (español de México).
+# Una frase por línea; las líneas con # se ignoran. Los números van escritos con letra a propósito:
+# así la grabación coincide exactamente con el texto.
+# Cubre todos los fonemas (rr, ñ, ll/y, ch, j, x de México, tl, diptongos, seseo), acentos
+# en distintas sílabas, preguntas, exclamaciones, enumeraciones y frases largas con pausas.
+
+# --- Asistente: respuestas cortas y naturales ---
+Listo, ya quedó guardado en la carpeta del expediente.
+Claro, ahorita te lo leo.
+No encontré ningún archivo con ese nombre. ¿Quieres que busque en otra carpeta?
+Perdón, no te entendí bien. ¿Me lo repites, por favor?
+Tienes tres pendientes para hoy y una audiencia mañana temprano.
+¡Muy bien! La demanda ya está presentada.
+¿A qué hora quieres que agende la cita con el cliente?
+Va, te aviso en cuanto llegue la notificación.
+
+# --- Fonética variada ---
+El perro de Rosario corrió por la carretera rumbo a Guerrero.
+La niña soñaba con una montaña llena de castañas y piñones.
+Ayer llovió muchísimo en la calle de Yucatán, junto al callejón.
+Chema y Concha checaron el chocolate de Chihuahua.
+José jugaba con el gemelo de Javier en el jardín de Jalisco.
+México, Oaxaca y Xalapa tienen mercados llenos de jitomate y tlacoyos.
+Xóchitl compró aguacates, tomatillos y chiles en el tianguis de Tlalpan.
+La huella del cuidadoso guía quedó en el agua del pozuelo.
+Ciento cincuenta y siete zapatos azules se vendieron el sábado.
+El búho miró la cúpula y el árbol desde el ático polvoriento.
+Fuimos a Puebla, Querétaro y Zacatecas en el mismo fin de semana.
+Kilómetros de playa, kioscos de colores y una que otra palmera.
+
+# --- Dominio jurídico ---
+El demandado no compareció, por lo que se le tuvo por confeso.
+La sentencia quedó firme y ya causó ejecutoria.
+Según el artículo catorce constitucional, nadie puede ser privado de su libertad sin juicio previo.
+Hay que presentar la declaración ante el SAT y dar de alta al trabajador en el IMSS.
+Se interpuso un amparo indirecto contra el auto de vinculación a proceso.
+El plazo para contestar la demanda vence el quince de noviembre de dos mil veintiséis.
+Revisa la cláusula décima segunda, fracción tercera, del contrato de arrendamiento.
+El juzgado tercero de lo civil fijó la audiencia a las diez treinta de la mañana.
+La pensión alimenticia quedó en doce mil quinientos pesos mensuales.
+El total con IVA es de mil ciento sesenta pesos con cincuenta centavos.
+Agenda una cita con el notario para la protocolización del acta de asamblea.
+El Código Nacional de Procedimientos Penales regula la audiencia inicial.
+
+# --- Frases largas, con pausas y enumeraciones ---
+Para el lunes necesito tres cosas: el escrito de pruebas, las copias certificadas y el comprobante de pago.
+Si el cliente está de acuerdo, mandamos el convenio hoy mismo; si no, lo revisamos juntos el jueves por la tarde.
+Buenos días, licenciada. Le escribo para confirmar que la audiencia sigue en pie, y para pedirle que traiga la identificación original.
+Aunque el tribunal concedió la suspensión, todavía falta que resuelva el fondo del asunto, así que no hay que confiarse.
+
+# --- Expresiones coloquiales y tono ---
+Órale, sí, está perfecto. Mándamelo cuando puedas.
+¿En serio? No me digas que otra vez se cayó el sistema del tribunal.
+Uy, qué pena, se me pasó por completo. Ahorita mismo lo resuelvo.
+Ajá, entendido. Entonces lo dejamos para la próxima semana.
+¡Qué buena noticia! Felicidades a todo el equipo.
+Oye, ¿qué tengo pendiente para hoy?

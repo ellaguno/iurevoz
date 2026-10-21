@@ -59,9 +59,9 @@ No existe un corpus es-MX de un solo locutor, con calidad de estudio y licencia 
 
 | Fase | Qué | Dónde y costo |
 |---|---|---|
-| **T0 · Banco de pruebas** | `bench/tts_bench.py`: el mismo conjunto de ~30 frases de dominio para cualquier voz; mide RTF, CER (Moonshine/Parakeet), MOS predicho (UTMOS o Distill-MOS, solo para comparar entre voces) y similitud de locutor (ECAPA). El prototipo de hoy ya mide RTF y CER | Local, gratis |
-| **T1 · Normalizador de texto** | Cifras, montos, porcentajes, fechas, siglas (IMSS, SAT, CFF) y artículos («art. 14») a palabras antes del TTS. **Mejora también las voces actuales** | Local, gratis |
-| **T2 · Elegir maestro** | Generar las 30 frases con Chatterbox es-mx-latam y Qwen3-TTS (en la P1000 o en CPU, aunque sea lento). Escucharlas y pasarlas por T0 | Local, gratis |
+| **T0 · Banco de pruebas** ✅ | `bench/tts_bench.py` + `bench/frases_tts.tsv` (30 frases de dominio): RTF y CER con Moonshine, `--wavs` para audio de otros modelos, `--normalizar`, `--mos` opcional. Falta integrar la similitud de locutor (se midió aparte con CAM++ de sherpa-onnx) | Local, gratis |
+| **T1 · Normalizador de texto** ✅ | `src/normalizar.rs`, usado por `voz::para_hablar`. Bajó el CER de Piper claude de 4.7 a 2.7 % y el de Supertonic de 5.1 a 2.8 % | Local, gratis |
+| **T2 · Elegir maestro** (en curso) | Generar las 30 frases con Chatterbox es-mx-latam y Qwen3-TTS clonando la voz del usuario (en CPU: no caben en la P1000 junto a IureTranscribe). Escucharlas y pasarlas por T0 | Local, gratis |
 | **T3 · Guion** | Unas 3,000 frases: selección greedy por cobertura de difonos sobre texto propio o de dominio público, más vocabulario jurídico, números y preguntas/exclamaciones | Local |
 | **T4 · Corpus** | Sintético con el maestro (GPU rentada) y/o grabación del locutor. Limpieza, recorte de silencios y verificación con ASR (se descartan las frases cuyo CER supere un umbral) | ~5–20 USD de GPU; locutor aparte |
 | **T5 · Entrenar** | Afinar Piper medium desde es_MX-ald. En paralelo, Matcha | GPU de 24 GB rentada, ~1 día: ~20–100 USD |
@@ -69,11 +69,24 @@ No existe un corpus es-MX de un solo locutor, con calidad de estudio y licencia 
 
 T0–T3 no cuestan nada y valen la pena aunque al final no se entrene: T1 mejora lo que ya hay y T2 dice cuánta calidad podemos aspirar a destilar.
 
-## Decisiones pendientes
+## Decisiones (2026-10-20)
 
-1. **¿De quién es la voz?** Opciones:
-   - una voz diseñada (sin persona real);
-   - un locutor contratado;
-   - la del propio usuario (grabada en silencio).
-2. **Presupuesto** para GPU en la nube y, en su caso, para el locutor.
-3. **Dónde publicar el modelo** para que la app lo descargue (release en GitHub del proyecto, como `iurefficient-connect`).
+1. **La voz es la del usuario** (una sola voz). Él mismo es el locutor, así que el consentimiento no es problema. Si algún día se distribuye el modelo a terceros, conviene dejarlo por escrito igualmente.
+2. **Maestros: solo modelos abiertos con licencia libre** (Chatterbox es-mx-latam, Qwen3-TTS), clonando la voz del usuario a partir de una grabación limpia.
+3. **Cartesia no se usa para datos de entrenamiento.** Sus términos, §4.2(5), prohíben usar la salida «to research and develop products, models and services that compete with Cartesia». Como mucho sirve de referencia de oído, no como corpus.
+
+Flujo resultante: grabación limpia del usuario (~1–2 min de referencia) → el maestro clona su voz → corpus sintético de 5–10 h con el guion → afinar Piper/Matcha → afinado final con 1–2 h reales del usuario.
+
+## Avance (2026-10-20)
+
+- **Grabación del usuario:** 42 frases de `bench/guion_voz.txt` (4.9 min, 48 kHz / 24 bits, fondo ≈ -68 dBFS) grabadas con `bench/grabar_voz.py` en `~/.local/share/iurevoz/mi-voz/` (formato LJSpeech). Las 42 coinciden con su texto según dos ASR.
+- **Chatterbox es-mx-latam clonando al usuario** (referencia: clip 035, 11 s):
+  - CER 1.6 %, el mejor de todos.
+  - Similitud de locutor 0.79 contra un techo de 0.91 (clips reales entre sí); las voces actuales dan 0.0–0.2.
+  - En CPU tarda 14–23× tiempo real, así que el corpus se genera en GPU rentada.
+- **Qwen3-TTS 0.6B:** en evaluación.
+
+## Pendiente
+
+- Presupuesto para GPU en la nube (T4–T5).
+- Dónde publicar el modelo para que la app lo descargue (release en GitHub del proyecto).
