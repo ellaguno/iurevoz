@@ -308,9 +308,24 @@ pub fn abrir(ruta: &str, con_editor: bool) -> Result<String> {
     Ok(format!("abrí {}", p.file_name().unwrap_or_default().to_string_lossy()))
 }
 
-pub fn nuevo_documento() -> Result<String> {
-    apps::launch(AppId::Editor, &[])?;
-    Ok("abrí IureEditor para un documento nuevo".into())
+/// Crea un Markdown vacío en Documentos y lo abre en IureEditor: así el dictado tiene
+/// dónde caer y el archivo existe aunque el editor no se guarde solo.
+pub fn nuevo_documento(titulo: Option<&str>) -> Result<String> {
+    let dir = dirs::document_dir().or_else(dirs::home_dir).context("no encuentro la carpeta Documentos")?;
+    let base = titulo
+        .map(|t| t.trim().chars().filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')).collect::<String>())
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| format!("Dictado {}", chrono::Local::now().format("%Y-%m-%d %H.%M")));
+    let mut ruta = dir.join(format!("{base}.md"));
+    let mut n = 2;
+    while ruta.exists() {
+        ruta = dir.join(format!("{base} ({n}).md"));
+        n += 1;
+    }
+    std::fs::write(&ruta, "")?;
+    crate::iure::recordar(crate::iure::Referencia::Archivo(ruta.clone()));
+    apps::open_with(AppId::Editor, &ruta)?;
+    Ok(format!("creé «{}» en Documentos y lo abrí en IureEditor", ruta.file_name().unwrap_or_default().to_string_lossy()))
 }
 
 // ── leer ─────────────────────────────────────────────────────────────────────

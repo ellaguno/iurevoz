@@ -143,6 +143,13 @@ fn para_claude(instruccion: &str) -> Option<String> {
 /// Tiempo máximo esperando una instrucción que no empieza.
 const ESPERA_INSTRUCCION: std::time::Duration = std::time::Duration::from_secs(8);
 
+/// ¿El texto es solo (parte de) la palabra clave? «Oye», «Oye, compu», «compu».
+fn solo_palabra_clave(texto: &str, palabra: &str) -> bool {
+    let clave = crate::correccion::palabras(palabra);
+    let t = crate::correccion::palabras(texto);
+    !t.is_empty() && t.len() <= clave.len() && t.iter().all(|w| clave.contains(w))
+}
+
 /// Tiempo máximo esperando la respuesta a una pregunta de otro programa (incluye oírla).
 const ESPERA_RESPUESTA: std::time::Duration = std::time::Duration::from_secs(25);
 
@@ -244,6 +251,8 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                     };
                     if let Some(i) = inicio {
                         rutas.estado.modo_comando.store(true, std::sync::atomic::Ordering::Relaxed);
+                        // «Oye» o «compu» sueltos son restos de la palabra clave, no la instrucción
+                        let i = if solo_palabra_clave(&i, palabra) { String::new() } else { i };
                         if i.is_empty() {
                             // solo se dijo el prefijo: se espera la instrucción
                             ev.enviar(Evento::EsperandoComando);
@@ -489,7 +498,7 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
             }
         }
         let ganchos = {
-            let (c1, c2) = (control.clone(), control.clone());
+            let (c1, c2, c3) = (control.clone(), control.clone(), control.clone());
             std::sync::Arc::new(crate::agente::Ganchos {
                 confirmar: Box::new(move |desc: &str| {
                     let (tx, rx) = crossbeam_channel::bounded(1);
@@ -499,6 +508,7 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
                     rx.recv_timeout(std::time::Duration::from_secs(110)).unwrap_or(false)
                 }),
                 pausar_escucha: Box::new(move |si| drop(c2.send(Control::PausarVigilia(si)))),
+                dictar: Box::new(move |si| drop(c3.send(Control::Dictar(si)))),
             })
         };
         let mut ag = Agente::new(cfg.comandos.llm.clone(), portal.clone(), voz.clone()).con_ganchos(ganchos);
@@ -652,6 +662,10 @@ mod pruebas {
         assert_eq!(si_o_no("No."), Some(false));
         assert_eq!(si_o_no("Permite"), Some(true));
         assert_eq!(si_o_no("el clima de hoy"), None);
+        assert!(solo_palabra_clave("Oye", "oye compu"));
+        assert!(solo_palabra_clave("Oye, compu.", "oye compu"));
+        assert!(!solo_palabra_clave("Oye, te voy a dictar", "oye compu"));
+        assert!(!solo_palabra_clave("", "oye compu"));
         assert_eq!(para_claude("Claude, revisa mis descargas").as_deref(), Some("revisa mis descargas"));
         assert_eq!(para_claude("Cloud busca los PDF del expediente").as_deref(), Some("busca los PDF del expediente"));
         assert_eq!(para_claude("abre la calculadora"), None);

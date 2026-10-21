@@ -20,6 +20,8 @@ use crate::voz::Voz;
 
 pub enum Control {
     Alternar,
+    /// Empezar (true) o terminar (false) el dictado; si ya está así, no hace nada.
+    Dictar(bool),
     /// Escuchar una instrucción (abre el micrófono si hace falta).
     Comando,
     /// Igual, pero sin callar la voz: para escuchar la respuesta a una pregunta del asistente.
@@ -166,7 +168,8 @@ impl Controlador {
                         o => o,
                     };
                     match orden {
-                        Control::Alternar => {
+                        Control::Dictar(si) if si == dictando => {}
+                        Control::Alternar | Control::Dictar(_) => {
                             dictando = !dictando;
                             log(if dictando { "inicia dictado" } else { "detiene dictado" });
                             if !dictando {

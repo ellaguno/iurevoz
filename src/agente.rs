@@ -27,7 +27,7 @@ Si la instrucción suena a abrir algo (aunque esté mal escrita, p. ej. «apre»
 Nunca digas que hiciste o harás algo sin haber llamado la herramienta correspondiente. \
 Para cualquier cuenta usa la herramienta calcular, nunca calcules de memoria. \
 Si te preguntan algo de conocimiento general, responde tú en una o dos frases; busca en la web solo si lo piden. \
-Cuando termines responde en español, en una o dos frases cortas, porque tu respuesta se lee en voz alta. \
+Cuando termines responde en español de México (tutea; nunca uses voseo), en una o dos frases cortas, porque tu respuesta se lee en voz alta. \
 No uses markdown ni listas. La persona está en México: moneda en pesos, IVA del 16 %. \
 Si una cuenta es ambigua, haz la interpretación más común y dila en la respuesta. Si la instrucción completa o responde a algo de los mensajes anteriores \
 (p. ej. solo un número tras preguntar «¿de qué cantidad?»), úsala junto con ese contexto. \
@@ -42,7 +42,7 @@ fn sistema_suite() -> String {
 archivos de los expedientes), IureOCR (PDF), IureTranscribe (grabar y transcribir reuniones) e IureEditor \
 (documentos). Resuelve el pedido con las herramientas; para encontrar un archivo usa primero archivos \
 (listar o buscar) y luego usa la ruta exacta que devuelva. Si te piden el contenido o un resumen, lee el \
-archivo y resume tú en dos o tres frases. Nunca inventes rutas ni resultados. Responde en español, breve, \
+archivo y resume tú en dos o tres frases. Nunca inventes rutas ni resultados. Responde en español de México (tutea; nunca voseo), breve, \
 sin markdown, porque se lee en voz alta."
         .to_string()
 }
@@ -59,7 +59,7 @@ calculadas desde hoy («mañana», «el jueves») y las horas como HH:MM de 24 h
 Si la herramienta responde que el usuario no lo permitió, dilo y no insistas. \
 Para hablar de un proyecto por su nombre, búscalo primero (listar_proyectos con búsqueda) y usa su id. \
 Si piden abrir o ver algo en Iurefficient, usa abrir_en_iurefficient. \
-Responde en español, breve (dos o tres frases), sin markdown ni listas largas, porque se lee en voz alta; \
+Responde en español de México (tutea; nunca voseo), breve (dos o tres frases), sin markdown ni listas largas, porque se lee en voz alta; \
 resume y da lo más importante primero (fechas próximas, pendientes). Nunca inventes datos. Hoy es {}.",
         esc::hora_fecha().rsplit_once(',').map_or_else(|| esc::hora_fecha(), |(f, _)| f.to_string())
     )
@@ -86,7 +86,7 @@ fn herramientas_suite() -> Value {
     json!([
         f("archivos", "Lista una carpeta de la unidad de IureDav (expedientes) o busca archivos por nombre.", json!({"carpeta": s("carpeta relativa a la unidad; vacío = raíz"), "buscar": s("palabras del nombre del archivo")}), &[]),
         f("abrir_archivo", "Abre un archivo con su programa, o en IureEditor si con_editor es true.", json!({"ruta": s("ruta devuelta por archivos o ruta en la carpeta personal"), "con_editor": {"type": "boolean"}}), &["ruta"]),
-        f("nuevo_documento", "Abre IureEditor para escribir un documento nuevo (luego el usuario dicta).", json!({}), &[]),
+        f("nuevo_documento", "Crea un documento nuevo (Markdown en Documentos) y lo abre en IureEditor para escribir o dictar.", json!({"titulo": s("título o nombre del documento (opcional)")}), &[]),
         f("leer_archivo", "Devuelve el texto de un archivo (PDF, txt, md) para resumirlo o responder sobre él.", json!({"ruta": s("ruta"), "desde_pagina": n("PDF: primera página"), "hasta_pagina": n("PDF: última página")}), &["ruta"]),
         f("leer_en_voz_alta", "Lee en voz alta el texto completo de un archivo, si el usuario pide que se lo lean.", json!({"ruta": s("ruta")}), &["ruta"]),
         f("ocr_pdf", "Pasa OCR a un PDF escaneado o imagen con IureOCR y crea un PDF con texto junto al original.", json!({"ruta": s("ruta"), "idiomas": s("p. ej. spa+eng")}), &["ruta"]),
@@ -126,6 +126,32 @@ pub struct Ganchos {
     pub confirmar: Box<dyn Fn(&str) -> bool + Send + Sync>,
     /// Pausa (true) o reanuda (false) «siempre escuchando», p. ej. mientras se graba una junta.
     pub pausar_escucha: Box<dyn Fn(bool) + Send + Sync>,
+    /// Empieza (true) o termina (false) el dictado, como el botón.
+    pub dictar: Box<dyn Fn(bool) + Send + Sync>,
+}
+
+/// «Te voy a dictar», «vamos a escribir», «toma dictado»: empezar a dictar (se decide en código).
+pub fn es_dictar(instruccion: &str) -> bool {
+    let t = instruccion.to_lowercase();
+    !es_fin_dictado(&t)
+        && ["dictar", "dictado", "vamos a escribir", "voy a escribir", "a escribir unas", "toma nota", "toma notas", "escribe lo que te diga", "escribe lo que diga"]
+            .iter()
+            .any(|f| t.contains(f))
+}
+
+/// «Termina el dictado», «deja de dictar», «ya acabé de dictar».
+pub fn es_fin_dictado(instruccion: &str) -> bool {
+    let t = instruccion.to_lowercase();
+    ["termina el dictado", "terminar el dictado", "deja de dictar", "fin del dictado", "para de dictar", "detén el dictado",
+     "deten el dictado", "acabé de dictar", "acabe de dictar", "terminé de dictar", "termine de dictar", "para el dictado", "termina de dictar"]
+        .iter()
+        .any(|f| t.contains(f))
+}
+
+/// ¿Además de dictar pide abrir algo (editor, documento)? Entonces primero se abre.
+fn pide_abrir(t: &str) -> bool {
+    let t = t.to_lowercase();
+    ["abre", "abrir", "editor", "documento", "archivo"].iter().any(|f| t.contains(f))
 }
 
 fn herramientas(con_claude: bool) -> Value {
@@ -283,6 +309,23 @@ impl Agente {
     pub fn ejecutar(&self, instruccion: &str, historial: &[Value], mut paso: impl FnMut(&str)) -> Result<Informe> {
         *self.instruccion.lock().unwrap() = instruccion.to_string();
         // instancia web o apps de la suite: directo al sub-agente, sin pasar por el modelo principal
+        if self.modo == Modo::Principal && es_fin_dictado(instruccion) {
+            if let Some(g) = &self.ganchos {
+                (g.dictar)(false);
+            }
+            paso("termina el dictado");
+            return Ok(Informe { acciones: vec!["terminar dictado".into()], respuesta: "Listo, dejé de dictar.".into() });
+        }
+        if self.modo == Modo::Principal && es_dictar(instruccion) && !pide_abrir(instruccion) {
+            if let Some(g) = &self.ganchos {
+                (g.dictar)(true);
+            }
+            paso("empieza el dictado");
+            return Ok(Informe {
+                acciones: vec!["empezar dictado".into()],
+                respuesta: "Adelante, te escucho. Para terminar di «oye compu, termina el dictado».".into(),
+            });
+        }
         if self.modo == Modo::Principal && crate::resumen::es_mi_dia(instruccion) {
             paso("resumen del día");
             let respuesta = match crate::resumen::mi_dia() {
@@ -316,7 +359,14 @@ impl Agente {
         if let Some(h) = directo {
             let texto = self.herramienta(h, &json!({"pedido": instruccion}))?;
             paso(&format!("{h} → {}", texto.chars().take(160).collect::<String>()));
-            let respuesta = texto.split(" (hice: ").next().unwrap_or(&texto).trim().to_string();
+            let mut respuesta = texto.split(" (hice: ").next().unwrap_or(&texto).trim().to_string();
+            // «abre el editor y vamos a escribir»: abierto el documento, se empieza a dictar
+            if self.modo == Modo::Principal && es_dictar(instruccion) {
+                if let Some(g) = &self.ganchos {
+                    (g.dictar)(true);
+                    respuesta += " Ya puedes dictar; para terminar di «oye compu, termina el dictado».";
+                }
+            }
             return Ok(Informe { acciones: vec![format!("{h}({})", args_cortos(&json!({"pedido": instruccion})))], respuesta });
         }
         if self.modo == Modo::Iure {
@@ -434,7 +484,7 @@ impl Agente {
             n if self.modo == Modo::Iure && crate::iure::es_herramienta(n) => crate::iure::llamar(n, a.clone()),
             "archivos" => crate::suite::archivos(a["carpeta"].as_str(), a["buscar"].as_str()),
             "abrir_archivo" => crate::suite::abrir(&s("ruta")?, a["con_editor"].as_bool().unwrap_or(false)),
-            "nuevo_documento" => crate::suite::nuevo_documento(),
+            "nuevo_documento" => crate::suite::nuevo_documento(a["titulo"].as_str()),
             "leer_archivo" => crate::suite::texto(&s("ruta")?, a["desde_pagina"].as_u64(), a["hasta_pagina"].as_u64()),
             "leer_en_voz_alta" => {
                 let t = crate::suite::texto(&s("ruta")?, None, None)?;
@@ -661,6 +711,17 @@ mod pruebas {
         assert!(es_de_iurefficient("crea una tarea para mañana: llamar al cliente Pérez"));
         assert!(es_de_iurefficient("agéndame una reunión el jueves a las 10"));
         assert!(es_de_iurefficient("márcalas como leídas"));
+    }
+
+    #[test]
+    fn dictado_por_voz() {
+        assert!(es_dictar("te voy a dictar"));
+        assert!(es_dictar("abre un editor de texto y vamos a escribir unas cosas"));
+        assert!(pide_abrir("abre un editor de texto y vamos a escribir unas cosas"));
+        assert!(!pide_abrir("te voy a dictar"));
+        assert!(es_fin_dictado("termina el dictado"));
+        assert!(!es_dictar("termina el dictado"));
+        assert!(!es_dictar("abre la calculadora"));
     }
 
     #[test]

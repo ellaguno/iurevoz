@@ -111,6 +111,7 @@ fn main() -> Result<()> {
                     false
                 }),
                 pausar_escucha: Box::new(|_| {}),
+                dictar: Box::new(|si| println!("  · {} el dictado (en la terminal no hay micrófono)", if si { "empezaría" } else { "terminaría" })),
             };
             let ag = agente::Agente::new(cfg.comandos.llm.clone(), Some(portal), voz.clone())
                 .con_ganchos(std::sync::Arc::new(ganchos));
