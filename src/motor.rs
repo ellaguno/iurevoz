@@ -171,7 +171,11 @@ fn editar_con_teclas(p: &Portal, e: crate::puntuacion::Edicion) {
 fn solo_palabra_clave(texto: &str, palabra: &str) -> bool {
     let clave = crate::correccion::palabras(palabra);
     let t = crate::correccion::palabras(texto);
-    !t.is_empty() && t.len() <= clave.len() && t.iter().all(|w| clave.contains(w))
+    if t.is_empty() || t.len() > clave.len() {
+        return false;
+    }
+    // «Oye», «compu», o «Oye» más algo que no se entendió («Oye, Cancún»)
+    t.iter().all(|w| clave.contains(w)) || (t.len() == 2 && clave.first() == t.first())
 }
 
 /// ¿La respuesta espera que el usuario conteste?
@@ -807,6 +811,7 @@ mod pruebas {
         assert!(solo_palabra_clave("Oye, compu.", "oye compu"));
         assert!(!solo_palabra_clave("Oye, te voy a dictar", "oye compu"));
         assert!(!solo_palabra_clave("", "oye compu"));
+        assert!(solo_palabra_clave("Oye, Cancún.", "oye compu"));
         assert_eq!(para_claude("Claude, revisa mis descargas").as_deref(), Some("revisa mis descargas"));
         assert_eq!(para_claude("Cloud busca los PDF del expediente").as_deref(), Some("busca los PDF del expediente"));
         assert_eq!(para_claude("abre la calculadora"), None);

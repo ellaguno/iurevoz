@@ -52,7 +52,8 @@ sin markdown, porque se lee en voz alta."
 fn sistema_iure() -> String {
     format!(
         "Eres el ayudante de IureVoz para consultar la instancia web de Iurefficient de quien te habla: \
-proyectos y expedientes, sus tareas, vencimientos y documentos, y su día: sus tareas (mis_tareas), su agenda, \
+proyectos y expedientes, sus tareas, vencimientos y documentos, las oportunidades y prospectos del CRM \
+(consultar_crm), y su día: sus tareas (mis_tareas), su agenda, \
 sus notificaciones, sus horas registradas (mis_horas) y clientes (buscar_cliente). Las herramientas son de solo lectura. \
 Para «qué tengo hoy» combina mis_tareas y agenda. \
 También puedes escribir, siempre con confirmación del usuario (la pide la herramienta, no la pidas tú): \
@@ -100,6 +101,16 @@ fn herramientas_suite() -> Value {
         f("transcribir", "Transcribe un audio con IureTranscribe y devuelve el texto.", json!({"ruta": s("ruta del audio")}), &["ruta"]),
         f("leer_transcripcion", "Devuelve el texto de una transcripción ya hecha.", json!({"ruta": s("ruta del audio o de la transcripción")}), &["ruta"]),
     ])
+}
+
+fn herramienta_crm() -> Value {
+    json!({"type": "function", "function": {"name": "consultar_crm",
+        "description": "Oportunidades de venta abiertas o prospectos (leads) del CRM de Iurefficient: nombre, organización, etapa, monto, probabilidad y cierre esperado.",
+        "parameters": {"type": "object", "properties": {
+            "tipo": {"type": "string", "enum": ["oportunidades", "prospectos"]},
+            "busqueda": {"type": "string", "description": "texto a buscar (cliente, organización, nombre)"},
+            "solo_mias": {"type": "boolean", "description": "solo las asignadas al usuario"}},
+            "required": ["tipo"]}}})
 }
 
 fn herramienta_abrir_iure() -> Value {
@@ -219,6 +230,58 @@ pub fn app_a_abrir(instruccion: &str) -> Option<String> {
     Some(resto.to_string())
 }
 
+/// Nombres de la suite como suelen llegar del reconocedor («Euroficient», «Yureditor»):
+/// cada palabra a pocas letras de un nombre se reemplaza por el nombre correcto.
+pub fn normalizar_nombres(instruccion: &str) -> String {
+    const NOMBRES: &[(&str, &str, usize)] = &[
+        ("iurefficient", "Iurefficient", 3),
+        ("iureditor", "IureEditor", 2),
+        ("iuredav", "IureDav", 2),
+        ("iuretranscribe", "IureTranscribe", 3),
+        ("iureocr", "IureOCR", 2),
+    ];
+    let plano = |w: &str| -> Vec<char> {
+        w.to_lowercase()
+            .chars()
+            .map(|c| match c {
+                'á' => 'a',
+                'é' => 'e',
+                'í' => 'i',
+                'ó' => 'o',
+                'ú' => 'u',
+                c => c,
+            })
+            .filter(|c| c.is_alphanumeric())
+            .collect()
+    };
+    instruccion
+        .split(' ')
+        .map(|w| {
+            let p = plano(w);
+            if p.len() < 6 {
+                return w.to_string();
+            }
+            // la «y» y la «eu» iniciales son la «iu» mal oída
+            let mut alt = p.clone();
+            if alt.first() == Some(&'y') {
+                alt[0] = 'i';
+            }
+            if alt.starts_with(&['e', 'u']) {
+                alt[0] = 'i';
+            }
+            for (clave, bien, max) in NOMBRES {
+                let c: Vec<char> = clave.chars().collect();
+                if crate::puntuacion::distancia(&alt, &c) <= *max {
+                    let fin: String = w.chars().rev().take_while(|c| !c.is_alphanumeric()).collect::<Vec<_>>().into_iter().rev().collect();
+                    return format!("{bien}{fin}");
+                }
+            }
+            w.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// ¿Es trabajo de sistema que las herramientas básicas no hacen (scripts, comandos, instalar,
 /// configurar, mover o renombrar archivos)? Va a Claude Code. Se decide en código: el modelo
 /// tiende a intentarlo con «teclas» y «escribir» o a decir que no puede.
@@ -241,14 +304,14 @@ pub fn es_de_la_suite(instruccion: &str) -> bool {
     const CLAVES: &[&str] = &[
         "archivo", "documento", "carpeta", "pdf", "escrito", "contrato", "grabaci", "grabar",
         "graba ", "junta", "reunión", "reunion", "transcrib", "transcripc", "editor", "iuredav", "iureocr",
-        "iuretranscribe", "iureditor", "ocr", "unidad", "página ", "páginas",
+        "iuretranscribe", "iureditor", "ocr", " unidad", "página ", "páginas",
     ];
     let web = pide_web(&t);
     !web && CLAVES.iter().any(|c| t.contains(c))
 }
 
 /// Palabras que indican archivos locales (IureDav, PDF…) y no la instancia web.
-const PALABRAS_ARCHIVO: &[&str] = &["archivo", "carpeta", "pdf", "grabaci", "transcrip", "editor", "ocr", "unidad", "página"];
+const PALABRAS_ARCHIVO: &[&str] = &["archivo", "carpeta", "pdf", "grabaci", "transcrip", "editor", "ocr", " unidad", "página"];
 
 /// ¿La instrucción es sobre la instancia web (proyectos, tareas, vencimientos, expedientes)?
 pub fn es_de_iurefficient(instruccion: &str) -> bool {
@@ -259,6 +322,8 @@ pub fn es_de_iurefficient(instruccion: &str) -> bool {
         // «mi día» (F2): tareas, agenda, avisos, horas y clientes de quien habla
         "qué tengo", "que tengo", "reunión", "reunion", "junta", "audiencia", "calendario", "notificaci", "aviso",
         "horas llevo", "mis horas", "horas registr", "hoja de horas", "cliente",
+        // CRM (oportunidades y prospectos)
+        "oportunidad", "crm", "prospecto", "embudo", "pipeline",
         // F4: escrituras
         "registra", "agend", "agénd", "evento", "cita ", "márca", "marca como leíd", "marca las",
     ];
@@ -323,6 +388,7 @@ impl Agente {
                 let mut v = crate::iure::herramientas().unwrap_or_else(|_| json!([]));
                 if let Some(a) = v.as_array_mut() {
                     a.push(herramienta_abrir_iure());
+                    a.push(herramienta_crm());
                     a.extend(crate::escribir::herramientas());
                 }
                 v
@@ -359,6 +425,9 @@ impl Agente {
 
     /// `historial`: turnos recientes (usuario/asistente) para dar continuidad a la conversación.
     pub fn ejecutar(&self, instruccion: &str, historial: &[Value], mut paso: impl FnMut(&str)) -> Result<Informe> {
+        // «Euroficient» → «Iurefficient», etc., antes de enrutar
+        let normalizada = normalizar_nombres(instruccion);
+        let instruccion = normalizada.as_str();
         *self.instruccion.lock().unwrap() = instruccion.to_string();
         // instancia web o apps de la suite: directo al sub-agente, sin pasar por el modelo principal
         if self.modo == Modo::Principal && es_fin_dictado(instruccion) {
@@ -560,6 +629,12 @@ impl Agente {
                 let hecho = if inf.acciones.is_empty() { String::new() } else { format!(" (hice: {})", inf.acciones.join("; ")) };
                 Ok(format!("{}{hecho}", inf.respuesta))
             }
+            "consultar_crm" => crate::iure::crm(
+                a["tipo"].as_str().unwrap_or("oportunidades"),
+                a["busqueda"].as_str(),
+                a["solo_mias"].as_bool().unwrap_or(false),
+                20,
+            ),
             "abrir_en_iurefficient" => crate::iure::abrir(&s("que")?, a["id"].as_str(), a["nombre"].as_str()),
             n if self.modo == Modo::Iure && crate::escribir::es_herramienta(n) => {
                 let g = self.ganchos.clone();
@@ -823,6 +898,17 @@ mod pruebas {
         assert!(!es_de_la_suite("Abre la página del New York Times y leme los encabezados"));
         assert!(pide_web("Abre la página del New York Times y leme los encabezados"));
         assert_eq!(app_a_abrir("abre el navegador").as_deref(), Some("el navegador"));
+    }
+
+    #[test]
+    fn nombres_de_la_suite() {
+        assert_eq!(normalizar_nombres("las oportunidades abiertas en Euroficient"), "las oportunidades abiertas en Iurefficient");
+        assert_eq!(normalizar_nombres("abre Yurefficient."), "abre Iurefficient.");
+        assert_eq!(normalizar_nombres("los archivos de iuredab"), "los archivos de IureDav");
+        assert_eq!(normalizar_nombres("eficiente y suficiente"), "eficiente y suficiente");
+        assert!(es_de_iurefficient("Dime cuáles son las oportunidades abiertas"));
+        assert!(!es_de_la_suite("Dime cuáles son las oportunidades abiertas"));
+        assert!(es_de_la_suite("¿qué hay en la unidad de Juárez?"));
     }
 
     #[test]

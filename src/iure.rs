@@ -283,6 +283,56 @@ pub fn rest(metodo: reqwest::Method, ruta: &str, cuerpo: Option<Value>) -> Resul
     r
 }
 
+/// Oportunidades o prospectos del CRM (plugin iur-crm) por REST: el servidor MCP no los
+/// expone. Devuelve un JSON compacto para el modelo.
+pub fn crm(tipo: &str, busqueda: Option<&str>, solo_mias: bool, limite: u32) -> Result<String> {
+    let oportunidades = !tipo.starts_with("prospect") && !tipo.starts_with("lead");
+    let mut ruta = format!(
+        "/api/plugins/crm/{}?limit={}&offset=0",
+        if oportunidades { "opportunities" } else { "leads" },
+        limite.clamp(1, 50)
+    );
+    if oportunidades {
+        ruta.push_str("&status=open&order_by=created_desc");
+    }
+    if solo_mias {
+        ruta.push_str("&mine=true");
+    }
+    if let Some(q) = busqueda.map(str::trim).filter(|q| !q.is_empty()) {
+        let q: String = q.bytes().map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+        ruta.push_str(&format!("&search={q}"));
+    }
+    let v = rest(reqwest::Method::GET, &ruta, None).map_err(|e| {
+        let m = e.to_string();
+        if m.contains("404") {
+            anyhow::anyhow!("el CRM no está habilitado en tu instancia de Iurefficient")
+        } else if m.contains("403") {
+            anyhow::anyhow!("tu usuario no tiene permiso para ver el CRM")
+        } else {
+            e
+        }
+    })?;
+    let t = |x: &Value, k: &str| x[k].as_str().filter(|s| !s.is_empty()).map(String::from);
+    let items: Vec<Value> = v["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|i| {
+            if oportunidades {
+                json!({"nombre": t(i, "name"), "organizacion": t(i, "organization_name").or(t(i, "lead_name")),
+                       "etapa": t(i, "stage_name"), "monto": i["amount"], "moneda": t(i, "currency"),
+                       "probabilidad_pct": i["probability_pct"], "cierre_esperado": t(i, "expected_close_date")})
+            } else {
+                json!({"nombre": t(i, "name").or(t(i, "company_name")), "empresa": t(i, "company_name"),
+                       "estado": t(i, "status"), "email": t(i, "email"), "telefono": t(i, "phone")})
+            }
+        })
+        .collect();
+    let r = json!({"tipo": if oportunidades { "oportunidades abiertas" } else { "prospectos" },
+                   "total": v["total"], "mostrados": items.len(), "items": items});
+    Ok(r.to_string().chars().take(6000).collect())
+}
+
 /// Id de usuario de quien usa IureVoz en la instancia.
 pub fn yo() -> Result<String> {
     if SESION.lock().unwrap().is_none() {

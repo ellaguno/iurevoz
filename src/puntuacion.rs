@@ -304,7 +304,7 @@ fn es_sustantivo(limpias: &[String], i: usize, n: usize) -> bool {
     previa.is_some_and(|p| det.contains(&p)) || (n == 1 && matches!(siguiente, Some("de" | "del" | "medio")))
 }
 
-fn distancia(a: &[char], b: &[char]) -> usize {
+pub(crate) fn distancia(a: &[char], b: &[char]) -> usize {
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     for (i, x) in a.iter().enumerate() {
         let mut cur = vec![i + 1];
