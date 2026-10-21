@@ -22,6 +22,8 @@ pub enum Orden {
     Audio { muestras: Vec<f32>, tasa: u32 },
     /// Audio en modo «siempre escuchando»: solo se busca la palabra clave.
     Vigilia { muestras: Vec<f32>, tasa: u32 },
+    /// Audio real mientras la app habla: solo se buscan «cállate», «silencio»…
+    Interrumpir { muestras: Vec<f32>, tasa: u32 },
     /// Fin del dictado: sale la última frase y se reinicia la puntuación.
     Fin,
     /// Nueva configuración (recarga el modelo si cambió).
@@ -198,6 +200,8 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
     let mut instr: Option<EnCurso> = None;
     // detector de palabra clave; se crea al primer audio de vigilia
     let mut vigilia: Option<crate::vigilia::Vigilia> = None;
+    // otro detector de voz (VAD) para oír órdenes de callar mientras la app habla
+    let mut barrera: Option<crate::vigilia::Vigilia> = None;
     // desde cuándo se espera una instrucción que no llega
     let mut esperando_desde: Option<std::time::Instant> = None;
     let mut ultimo_envio: Option<std::time::Instant> = None;
@@ -359,9 +363,38 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                     emitir(s, &cfg, &mut punt, &mut instr, &mut id);
                 }
             }
+            Orden::Interrumpir { muestras, tasa } => {
+                let Some(r) = rec.as_mut() else { continue };
+                if tasa as i32 != SR {
+                    continue; // (el micrófono va a 16 kHz; no se mezcla con el remuestreo del dictado)
+                }
+                if barrera.is_none() {
+                    barrera = modelos::rutas_moonshine().and_then(|m| crate::vigilia::Vigilia::new(&m.vad)).ok();
+                }
+                let Some(b) = barrera.as_mut() else { continue };
+                let control = rutas.control.clone();
+                b.alimentar(&muestras, |tramo| {
+                    let t = r.transcribir_corto(tramo);
+                    if std::env::var_os("IUREVOZ_LOG").is_some() && !t.trim().is_empty() {
+                        eprintln!("[iurevoz] mientras habla: {t:?}");
+                    }
+                    if !t.trim().is_empty() {
+                        let _ = control.send(Control::Interrupcion(t));
+                    }
+                    false
+                });
+            }
             Orden::Audio { muestras, tasa } => {
                 let Some(r) = rec.as_mut() else { continue };
                 let Some(m16) = a_16k(&mut remuestreo, muestras, tasa) else { continue };
+                if let Some(b) = barrera.as_mut() {
+                    b.reiniciar();
+                }
+                // mientras la app habla el micrófono llega en ceros: la espera de una
+                // instrucción o una respuesta empieza cuando termina de hablar
+                if m16.iter().all(|x| *x == 0.0) {
+                    esperando_desde = None;
+                }
                 if let Some(v) = vigilia.as_mut() {
                     v.reiniciar(); // al volver a vigilar se empieza limpio
                 }
@@ -522,7 +555,7 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
                 if let Some(v) = &voz_resp {
                     v.decir("Se lo paso a Claude.");
                 }
-                lanzar_claude(id, tarea, voz_resp.clone(), ev.clone());
+                lanzar_claude(id, tarea, voz_resp.clone(), ev.clone(), control.clone());
                 continue;
             }
         }
@@ -542,14 +575,14 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
         };
         let mut ag = Agente::new(cfg.comandos.llm.clone(), portal.clone(), voz.clone()).con_ganchos(ganchos);
         if cfg.comandos.claude {
-            let (control, ev, v) = (control.clone(), ev.clone(), voz_resp.clone());
+            let (control, ev, v, ctl_claude) = (control.clone(), ev.clone(), voz_resp.clone(), control.clone());
             ag = ag.con_claude(Box::new(move |tarea: &str| {
                 // el modelo local decidió delegar: se confirma antes de mandar nada fuera
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 let resumen: String = tarea.split(['.', ',', '(']).next().unwrap_or(tarea).trim().to_string();
                 let _ = control.send(Control::Permiso(format!("encargarse de: {tarea}"), format!("Claude quiere encargarse de {resumen}."), tx));
                 if rx.recv_timeout(std::time::Duration::from_secs(110)).unwrap_or(false) {
-                    lanzar_claude(id, tarea.to_string(), v.clone(), ev.clone());
+                    lanzar_claude(id, tarea.to_string(), v.clone(), ev.clone(), ctl_claude.clone());
                     Ok("le pasé la tarea a Claude; avisaré cuando termine".into())
                 } else {
                     Ok("el usuario no quiso pasarle la tarea a Claude".into())
@@ -598,7 +631,7 @@ fn notificar(titulo: &str, cuerpo: &str) {
 }
 
 /// Corre la tarea con Claude Code en su propio hilo: puede tardar minutos.
-fn lanzar_claude(id: usize, tarea: String, voz: Option<Voz>, ev: Emisor) {
+fn lanzar_claude(id: usize, tarea: String, voz: Option<Voz>, ev: Emisor, control: Sender<Control>) {
     std::thread::Builder::new()
         .name("claude".into())
         .spawn(move || {
@@ -617,6 +650,10 @@ fn lanzar_claude(id: usize, tarea: String, voz: Option<Voz>, ev: Emisor) {
                     notificar("Claude terminó", &crate::voz::para_voz(&resp));
                     if let Some(v) = &voz {
                         v.decir(resp.clone());
+                    }
+                    // si Claude pregunta algo, se queda escuchando la respuesta
+                    if resp.trim_end().ends_with('?') {
+                        let _ = control.send(Control::Seguir);
                     }
                     ev.enviar(Evento::Respuesta { id, texto: resp });
                 }

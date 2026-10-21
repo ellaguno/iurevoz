@@ -174,7 +174,8 @@ fn herramientas(con_claude: bool) -> Value {
         f("volumen", "Cambia el volumen del sistema.", json!({"accion": {"type": "string", "enum": ["subir", "bajar", "silenciar", "activar"]}, "cantidad": {"type": "integer", "description": "porcentaje, 10 por omisión"}}), &["accion"]),
         f("hora_fecha", "Da la fecha y hora actuales.", json!({}), &[]),
         f("leer_seleccion", "Lee en voz alta el texto seleccionado (o el del portapapeles).", json!({}), &[]),
-        f("leer_pagina", "Lee en voz alta el texto de un artículo web concreto, solo si el usuario pide que se lo lean. Nunca con páginas de buscadores.", json!({"url": s("URL del artículo")}), &["url"]),
+        f("leer_pagina", "Lee en voz alta el texto completo de un artículo web concreto, solo si el usuario pide que se lo lean entero. Nunca con páginas de buscadores.", json!({"url": s("URL del artículo")}), &["url"]),
+        f("consultar_pagina", "Trae el texto de una página web (p. ej. la portada de un periódico) para que tú la resumas o digas sus encabezados. Usa la URL oficial del sitio (nytimes.com, eluniversal.com.mx…).", json!({"url": s("URL de la página")}), &["url"]),
         f("expedientes_y_apps", "Pedidos sobre las apps de Iurefficient en este equipo: archivos de expedientes en IureDav (listar, buscar, abrir, leer, resumir), PDF con IureOCR (OCR, leer páginas, girar o quitar páginas), grabar o transcribir reuniones con IureTranscribe, abrir o crear documentos en IureEditor.", json!({"pedido": s("el pedido completo, con nombres de archivo o carpeta tal como se dijeron")}), &["pedido"]),
     ]);
     if con_claude {
@@ -191,13 +192,30 @@ fn herramientas(con_claude: bool) -> Value {
 /// Pide confirmación y, si se concede, lanza la tarea con Claude. Devuelve qué pasó.
 pub type Delegar = Box<dyn Fn(&str) -> Result<String> + Send + Sync>;
 
+/// «Abre Google Chrome», «inicia la calculadora»: el nombre de la app a abrir, si la frase
+/// no es más que eso (las apps de la suite, la web y el dictado tienen su propio camino).
+pub fn app_a_abrir(instruccion: &str) -> Option<String> {
+    let t = instruccion.trim().trim_end_matches(['.', '!', '?']).to_lowercase();
+    const VERBOS: &[&str] = &["abre la aplicación ", "abre la app ", "ábreme ", "abreme ", "abre ", "abrir ", "inicia ", "lanza ", "arranca "];
+    let resto = VERBOS.iter().find_map(|v| t.strip_prefix(v))?.trim();
+    if resto.is_empty() || resto.split_whitespace().count() > 4 {
+        return None;
+    }
+    // «google chrome» y «el navegador» son apps, no un pedido de web
+    let sin_apps = t.replace("google chrome", "chrome").replace("navegador", "");
+    if es_de_la_suite(&t) || pide_web(&sin_apps) || es_de_iurefficient(&t) || es_dictar(&t) || es_abrelo(&t) {
+        return None;
+    }
+    Some(resto.to_string())
+}
+
 /// ¿Es trabajo de sistema que las herramientas básicas no hacen (scripts, comandos, instalar,
 /// configurar, mover o renombrar archivos)? Va a Claude Code. Se decide en código: el modelo
 /// tiende a intentarlo con «teclas» y «escribir» o a decir que no puede.
 pub fn es_tarea_de_sistema(instruccion: &str) -> bool {
     let t = instruccion.to_lowercase();
     const CLAVES: &[&str] = &[
-        "script", "programa que", "programita", "código", "codigo", "python", "bash", "comando", "terminal y ejecuta",
+        "script", "programa que", "programita", "python", "bash", "comando", "terminal y ejecuta",
         "ejecuta ", "instala", "desinstala", "configura", "actualiza el sistema", "actualiza los paquetes",
         "renombra", "mueve los", "mueve el", "mueve la", "copia los", "copia el", "copia la", "borra los", "borra el",
         "borra la", "elimina los", "comprime", "descomprime", "respalda", "respaldo", "cron", "servicio de",
@@ -245,7 +263,8 @@ pub fn es_de_iurefficient(instruccion: &str) -> bool {
 /// ¿Pidió explícitamente internet? Sin esto, buscar_web y leer_pagina no se ejecutan.
 fn pide_web(t: &str) -> bool {
     let t = t.to_lowercase();
-    ["internet", "la web", "en web", "google", "en línea", "en linea", "navegador", "wikipedia", "sitio", "http", ".com", ".mx", "url"]
+    ["internet", "la web", "en web", "google", "en línea", "en linea", "navegador", "wikipedia", "sitio", "http", ".com", ".mx", "url",
+     "página web", "página de", "página del", "periódico", "noticias", "encabezados", "titulares", "new york times", "diario "]
         .iter()
         .any(|c| t.contains(c))
 }
@@ -369,6 +388,15 @@ impl Agente {
                 Err(e) => format!("{}.", format!("{e:#}").trim_end_matches('.')),
             };
             return Ok(Informe { acciones: vec![texto], respuesta });
+        }
+        // «abre Google Chrome»: se abre en código; si no hay una app con ese nombre, sigue el modelo
+        if self.modo == Modo::Principal {
+            if let Some(app) = app_a_abrir(instruccion) {
+                if let Ok(t) = esc::abrir_aplicacion(&app) {
+                    paso(&format!("abrir_aplicacion → {t}"));
+                    return Ok(Informe { acciones: vec![format!("abrir_aplicacion({app})")], respuesta: format!("Listo, {t}.") });
+                }
+            }
         }
         // trabajo de sistema: a Claude Code (pide permiso antes de empezar)
         if self.modo == Modo::Principal && self.delegar.is_some() && es_tarea_de_sistema(instruccion) {
@@ -559,6 +587,11 @@ impl Agente {
             "leer_transcripcion" => crate::suite::leer_transcripcion(&s("ruta")?),
             "leer_pagina" if !pide_web(&self.instruccion.lock().unwrap()) && !self.instruccion.lock().unwrap().to_lowercase().contains("página") => {
                 bail!("no se pidió leer una página web")
+            }
+            "consultar_pagina" if !pide_web(&self.instruccion.lock().unwrap()) => bail!("no se pidió consultar una página web"),
+            "consultar_pagina" => {
+                let t = esc::texto_de_pagina(&s("url")?)?;
+                Ok(t.chars().take(6000).collect())
             }
             "leer_pagina" => {
                 let t = esc::texto_de_pagina(&s("url")?)?;
@@ -756,6 +789,18 @@ mod pruebas {
         assert!(!es_tarea_de_sistema("¿qué tengo hoy?"));
         assert!(!es_tarea_de_sistema("¿quién fue Porfirio Díaz?"));
         assert!(!es_tarea_de_sistema("sube el volumen"));
+        assert!(!es_tarea_de_sistema("¿Conoces el código de Hammurabi?"));
+    }
+
+    #[test]
+    fn abrir_apps_y_web() {
+        assert_eq!(app_a_abrir("Abre Google Chrome").as_deref(), Some("google chrome"));
+        assert_eq!(app_a_abrir("inicia la calculadora.").as_deref(), Some("la calculadora"));
+        assert_eq!(app_a_abrir("Abre la página del New York Times y leme los encabezados"), None);
+        assert_eq!(app_a_abrir("abre el editor y vamos a escribir"), None);
+        assert!(!es_de_la_suite("Abre la página del New York Times y leme los encabezados"));
+        assert!(pide_web("Abre la página del New York Times y leme los encabezados"));
+        assert_eq!(app_a_abrir("abre el navegador").as_deref(), Some("el navegador"));
     }
 
     #[test]

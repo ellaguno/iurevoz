@@ -349,12 +349,12 @@ pub fn volumen(accion: &str, cantidad: Option<u32>) -> Result<String> {
 pub fn traer_al_frente(portal: &crate::portal::Portal, nombre: &str) {
     const SUPER: u32 = 0xffeb;
     const ENTER: u32 = 0xff0d;
-    // la ventana del editor tarda en aparecer
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // la ventana del editor tarda en aparecer (y si no existe aún, Enter abriría otra)
+    std::thread::sleep(std::time::Duration::from_millis(4000));
     portal.teclas(vec![SUPER]);
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    std::thread::sleep(std::time::Duration::from_millis(1000));
     portal.escribir(nombre.to_string());
-    std::thread::sleep(std::time::Duration::from_millis(900));
+    std::thread::sleep(std::time::Duration::from_millis(1300));
     portal.teclas(vec![ENTER]);
     std::thread::sleep(std::time::Duration::from_millis(500));
 }

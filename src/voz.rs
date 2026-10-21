@@ -255,6 +255,9 @@ pub struct Voz {
     pub hablando: Arc<AtomicBool>,
     callar: Arc<AtomicBool>,
     generacion: Arc<std::sync::atomic::AtomicU64>,
+    /// Lo último que se mandó a decir: si el micrófono oye «silencio» y la app lo estaba
+    /// diciendo, no es el usuario pidiendo que calle.
+    pub dicho: Arc<std::sync::Mutex<String>>,
 }
 
 impl Voz {
@@ -336,12 +339,20 @@ impl Voz {
                 }
             })
             .expect("hilo de voz");
-        Self { tx, hablando, callar, generacion }
+        Self { tx, hablando, callar, generacion, dicho: Default::default() }
     }
 
     pub fn decir(&self, texto: impl Into<String>) {
         let t = para_hablar(&texto.into());
         if !t.trim().is_empty() {
+            let mut d = self.dicho.lock().unwrap();
+            d.push(' ');
+            d.push_str(&t.to_lowercase());
+            let sobra = d.chars().count().saturating_sub(4000);
+            if sobra > 0 {
+                *d = d.chars().skip(sobra).collect();
+            }
+            drop(d);
             let _ = self.tx.send(Orden::Decir(t, self.generacion.load(Ordering::Relaxed)));
         }
     }

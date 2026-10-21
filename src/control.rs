@@ -39,6 +39,8 @@ pub enum Control {
     /// Escuchar una respuesta libre (F6b): se dice la pregunta (si hay) y lo que el usuario
     /// diga hasta una pausa de `pausa` va a `tx` en lugar de al agente.
     Escuchar { pregunta: Option<String>, pausa: std::time::Duration, tx: Sender<String> },
+    /// El micrófono oyó algo mientras la app hablaba (lo manda el motor): si es «cállate», se calla.
+    Interrupcion(String),
     /// Decir un texto; `listo` recibe aviso cuando termina de hablar.
     Decir(String, Sender<()>),
     /// Respuesta del usuario (botones o voz) al permiso pendiente.
@@ -136,6 +138,8 @@ impl Controlador {
                         move |mut muestras, tasa| {
                             // mientras la app habla, el micrófono oye silencio: no se transcribe a sí misma
                             if hablando.as_ref().is_some_and(|h| h.load(Ordering::Relaxed)) {
+                                // el audio real solo se usa para oír «cállate», «silencio»…
+                                let _ = m.send(Orden::Interrumpir { muestras: muestras.clone(), tasa });
                                 muestras.iter_mut().for_each(|x| *x = 0.0);
                             }
                             let o = if atento.load(Ordering::Relaxed) {
@@ -309,6 +313,15 @@ impl Controlador {
                             }
                             None => drop(listo.send(())),
                         },
+                        Control::Interrupcion(t) => {
+                            if let Some(v) = &voz {
+                                let dicho = v.dicho.lock().unwrap().clone();
+                                if v.hablando.load(Ordering::Relaxed) && es_callar(&t, &dicho) {
+                                    log(&format!("interrupción: «{t}» → callar"));
+                                    v.callar();
+                                }
+                            }
+                        }
                         Control::Atajo(..) => unreachable!(),
                     }
                     // el audio va al reconocedor si algo lo necesita; si no, a la vigilia
@@ -362,6 +375,25 @@ impl Controlador {
 
 fn ruta_socket() -> PathBuf {
     dirs::runtime_dir().unwrap_or_else(std::env::temp_dir).join("iurevoz.sock")
+}
+
+/// Palabras que callan a la app mientras habla, sin palabra clave.
+const CALLAR: &[&str] = &["silencio", "cállate", "callate", "calla", "cállese", "callese", "detente", "basta", "shh", "alto"];
+
+/// ¿Lo que oyó el micrófono mientras la app hablaba es una orden de callar? Sin cancelación
+/// de eco el micrófono también oye la voz de la app, así que una palabra que la app estaba
+/// diciendo no cuenta.
+pub fn es_callar(oido: &str, dicho: &str) -> bool {
+    let oido = oido.to_lowercase();
+    let dicho = dicho.to_lowercase();
+    let palabras: Vec<String> = oido
+        .split(|c: char| !c.is_alphanumeric() && c != 'á' && c != 'é')
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect();
+    palabras.iter().any(|w| CALLAR.contains(&w.as_str()) && !dicho.split(|c: char| !c.is_alphanumeric()).any(|d| d == w))
+        || (palabras.len() <= 3 && palabras.iter().any(|w| ["para", "párale", "parale", "ya"].contains(&w.as_str())) && !palabras.is_empty()
+            && palabras.iter().all(|w| ["para", "párale", "parale", "ya", "oye", "compu", "por", "favor"].contains(&w.as_str())))
 }
 
 /// Envía una orden y espera la respuesta (hasta `espera`). `None` si la app no está abierta.
@@ -463,4 +495,20 @@ pub fn escuchar_socket(ctl: Controlador) {
             }
         })
         .expect("hilo de socket");
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::es_callar;
+
+    #[test]
+    fn ordenes_de_callar() {
+        assert!(es_callar("cállate", "las leyes de hammurabi"));
+        assert!(es_callar("las leyes de, cállate, hammurabi", "las leyes de hammurabi"));
+        assert!(es_callar("Silencio.", ""));
+        assert!(es_callar("ya para", ""));
+        assert!(!es_callar("el silencio de la ley", "el silencio de la ley"));
+        assert!(!es_callar("para la próxima semana", "para la próxima semana"));
+        assert!(!es_callar("", ""));
+    }
 }
