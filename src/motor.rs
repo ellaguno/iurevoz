@@ -78,6 +78,7 @@ impl Motor {
         let control_ag = control.clone();
 
         let ev = Emisor { tx: tx_ev.clone(), notificar: notificar.clone() };
+        let destino = estado.destino.clone();
         let rutas = Rutas { salida: tx_sal, agente: tx_ag, estado, control };
         std::thread::Builder::new()
             .name("asr".into())
@@ -88,7 +89,7 @@ impl Motor {
         let p = portal.clone();
         std::thread::Builder::new()
             .name("salida".into())
-            .spawn(move || hilo_salida(rx_sal, p, ev))
+            .spawn(move || hilo_salida(rx_sal, p, ev, destino))
             .expect("hilo salida");
 
         let ev = Emisor { tx: tx_ev, notificar };
@@ -573,7 +574,7 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
             }
         }
         let ganchos = {
-            let (c1, c2, c3) = (control.clone(), control.clone(), control.clone());
+            let (c1, c2, c3, c4) = (control.clone(), control.clone(), control.clone(), control.clone());
             std::sync::Arc::new(crate::agente::Ganchos {
                 confirmar: Box::new(move |desc: &str| {
                     let (tx, rx) = crossbeam_channel::bounded(1);
@@ -584,6 +585,7 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
                 }),
                 pausar_escucha: Box::new(move |si| drop(c2.send(Control::PausarVigilia(si)))),
                 dictar: Box::new(move |si| drop(c3.send(Control::Dictar(si)))),
+                destino: Box::new(move |d| drop(c4.send(Control::Destino(d)))),
             })
         };
         let mut ag = Agente::new(cfg.comandos.llm.clone(), portal.clone(), voz.clone()).con_ganchos(ganchos);
@@ -682,7 +684,12 @@ fn lanzar_claude(id: usize, tarea: String, voz: Option<Voz>, ev: Emisor, control
         .expect("hilo claude");
 }
 
-fn hilo_salida(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, ev: Emisor) {
+fn hilo_salida(
+    rx: Receiver<(usize, String, Config)>,
+    portal: Option<Portal>,
+    ev: Emisor,
+    destino: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
+) {
     let mut corrector: Option<(crate::config::Correccion, Corrector)> = None;
     // lo ya entregado, como contexto para la siguiente corrección
     let mut contexto = String::new();
@@ -715,6 +722,14 @@ fn hilo_salida(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, ev
                 corte += 1;
             }
             contexto.drain(..corte);
+        }
+        // dictado para un documento de IureEditor: por enlace, aunque su ventana no tenga el foco
+        let doc = destino.lock().unwrap().clone();
+        if let Some(doc) = doc {
+            if let Err(e) = crate::suite::insertar_en_editor(&doc, &final_) {
+                ev.enviar(Evento::Error(format!("IureEditor: {e:#}")));
+            }
+            continue;
         }
         if cfg.inyeccion == Inyeccion::Teclear {
             if let Some(p) = &portal {

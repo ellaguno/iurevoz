@@ -22,6 +22,8 @@ pub enum Control {
     Alternar,
     /// Empezar (true) o terminar (false) el dictado; si ya está así, no hace nada.
     Dictar(bool),
+    /// El dictado va a este documento de IureEditor (o, con `None`, a la ventana activa).
+    Destino(Option<PathBuf>),
     /// Escuchar una instrucción (abre el micrófono si hace falta).
     Comando,
     /// Igual, pero sin callar la voz: para escuchar la respuesta a una pregunta del asistente.
@@ -76,6 +78,8 @@ pub struct Estado {
     pub vigilia: Arc<AtomicBool>,
     /// Respuesta hablada que espera otro programa (F6b): a quién mandarla y qué pausa la cierra.
     pub captura: Arc<std::sync::Mutex<Option<(Sender<String>, std::time::Duration)>>>,
+    /// Documento de IureEditor al que va el dictado por enlace (sin teclear ni depender del foco).
+    pub destino: Arc<std::sync::Mutex<Option<PathBuf>>>,
 }
 
 impl Estado {
@@ -88,6 +92,7 @@ impl Estado {
             atento: Arc::new(AtomicBool::new(false)),
             vigilia: Arc::new(AtomicBool::new(false)),
             captura: Default::default(),
+            destino: Default::default(),
         }
     }
 }
@@ -177,6 +182,8 @@ impl Controlador {
                             dictando = !dictando;
                             log(if dictando { "inicia dictado" } else { "detiene dictado" });
                             if !dictando {
+                                // el próximo dictado vuelve a la ventana activa
+                                *e.destino.lock().unwrap() = None;
                                 e.modo_comando.store(false, Ordering::Relaxed);
                                 por_comando = false;
                                 let _ = motor.send(Orden::Fin);
@@ -313,6 +320,10 @@ impl Controlador {
                             }
                             None => drop(listo.send(())),
                         },
+                        Control::Destino(d) => {
+                            log(&format!("dictado hacia: {}", d.as_ref().map_or("la ventana activa".into(), |p| p.display().to_string())));
+                            *e.destino.lock().unwrap() = d;
+                        }
                         Control::Interrupcion(t) => {
                             if let Some(v) = &voz {
                                 let dicho = v.dicho.lock().unwrap().clone();

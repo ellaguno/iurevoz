@@ -308,6 +308,29 @@ pub fn abrir(ruta: &str, con_editor: bool) -> Result<String> {
     Ok(format!("abrí {}", p.file_name().unwrap_or_default().to_string_lossy()))
 }
 
+/// ¿El IureEditor instalado acepta `iureditor://insert`? (después de la 1.11.2). La versión
+/// sale del paquete; `IUREVOZ_EDITOR_INSERTA=1` lo fuerza para probar una compilación propia.
+pub fn editor_inserta() -> bool {
+    if std::env::var_os("IUREVOZ_EDITOR_INSERTA").is_some() {
+        return true;
+    }
+    let Ok(out) = Command::new("dpkg-query").args(["-W", "-f=${Version}", "iureditor"]).output() else { return false };
+    let v: Vec<u32> = String::from_utf8_lossy(&out.stdout).split(['.', '-', '~']).take(3).filter_map(|x| x.parse().ok()).collect();
+    v.len() == 3 && (v[0], v[1], v[2]) > (1, 11, 2)
+}
+
+/// Inserta texto en el cursor de `doc` en IureEditor ya abierto (enlace `iureditor://insert`).
+/// Se espera a que el proceso que pasa el enlace termine: así las frases llegan en orden.
+pub fn insertar_en_editor(doc: &Path, texto: &str) -> Result<()> {
+    let exe = apps::locate(apps::def(AppId::Editor)).context("IureEditor no está instalado")?;
+    let enlace = format!("iureditor://insert?path={}&text={}", codificar(&doc.to_string_lossy()), codificar(texto));
+    let st = Command::new(exe).arg(enlace).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    if !st.success() {
+        bail!("no aceptó el texto ({st})");
+    }
+    Ok(())
+}
+
 /// Crea un Markdown vacío en Documentos y lo abre en IureEditor: así el dictado tiene
 /// dónde caer y el archivo existe aunque el editor no se guarde solo.
 pub fn nuevo_documento(titulo: Option<&str>) -> Result<String> {
@@ -507,5 +530,15 @@ mod pruebas {
     #[test]
     fn enlaces_codificados() {
         assert_eq!(codificar("Pérez, García"), "P%C3%A9rez,%20Garc%C3%ADa");
+    }
+}
+
+#[cfg(test)]
+mod pruebas_editor {
+    #[test]
+    fn codifica_enlaces() {
+        assert_eq!(super::codificar("Hola, mundo.\n"), "Hola,%20mundo.%0A");
+        assert_eq!(super::codificar("/home/a/Dictado 1.md"), "%2Fhome%2Fa%2FDictado%201.md");
+        assert_eq!(super::codificar("año"), "a%C3%B1o");
     }
 }

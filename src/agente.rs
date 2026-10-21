@@ -130,6 +130,8 @@ pub struct Ganchos {
     pub pausar_escucha: Box<dyn Fn(bool) + Send + Sync>,
     /// Empieza (true) o termina (false) el dictado, como el botón.
     pub dictar: Box<dyn Fn(bool) + Send + Sync>,
+    /// El dictado va a este documento de IureEditor por enlace (`None`: a la ventana activa).
+    pub destino: Box<dyn Fn(Option<std::path::PathBuf>) + Send + Sync>,
 }
 
 /// «Te voy a dictar», «vamos a escribir», «toma dictado»: empezar a dictar (se decide en código).
@@ -429,10 +431,20 @@ impl Agente {
             // «abre el editor y vamos a escribir»: abierto el documento, se dicta
             if self.modo == Modo::Principal && es_dictar(instruccion) && texto.contains("IureEditor") {
                 if let Some(g) = &self.ganchos {
+                    // con un IureEditor que acepta enlaces de insertar, el dictado entra directo al
+                    // documento aunque su ventana esté detrás
+                    let doc = match crate::iure::ultima() {
+                        Some(crate::iure::Referencia::Archivo(p)) if crate::suite::editor_inserta() => Some(p),
+                        _ => None,
+                    };
+                    let directo_al_doc = doc.is_some();
+                    (g.destino)(doc);
                     (g.dictar)(true);
                     // la respuesta del sub-agente puede pedir datos («¿qué título?»): aquí ya no se pregunta.
                     // Si el editor ya estaba abierto, GNOME no le da el foco: hay que hacer clic.
-                    respuesta = if editor_ya_abierto {
+                    respuesta = if directo_al_doc {
+                        "Listo, abrí el documento en IureEditor. Dicta: el texto entra directo al documento; para terminar di «termina el dictado».".into()
+                    } else if editor_ya_abierto {
                         "Abrí el documento en IureEditor. Haz clic en su ventana y dicta; para terminar di «termina el dictado».".into()
                     } else {
                         "Listo, abrí el documento en IureEditor. Ya puedes dictar; para terminar di «termina el dictado».".into()
