@@ -261,6 +261,16 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                         }
                         continue;
                     }
+                    // al dictar, «(oye compu,) termina el dictado» es una orden, no texto: el ASR oye
+                    // la palabra clave mal («Oye Ku») y pedirla exacta dejaba escrito el «deja de dictar»
+                    {
+                        let resto = crate::vigilia::quitar(&t, palabra, cfg.escucha.tolerancia.max(0.5)).unwrap_or_else(|| t.clone());
+                        if crate::correccion::palabras(&resto).len() <= 6 && crate::agente::es_fin_dictado(&resto) {
+                            ev.enviar(Evento::Estado("Dictado terminado.".into()));
+                            let _ = rutas.control.send(Control::Dictar(false));
+                            continue;
+                        }
+                    }
                     punt.markdown = cfg.dictado_markdown;
                     let texto = punt.procesar(&t, cfg.puntuacion_dictada);
                     // «nuevo párrafo» solo produce saltos de línea: no se descarta

@@ -42,7 +42,7 @@ fn sistema_suite() -> String {
 archivos de los expedientes), IureOCR (PDF), IureTranscribe (grabar y transcribir reuniones) e IureEditor \
 (documentos). Resuelve el pedido con las herramientas; para encontrar un archivo usa primero archivos \
 (listar o buscar) y luego usa la ruta exacta que devuelva. Si te piden el contenido o un resumen, lee el \
-archivo y resume tú en dos o tres frases. Nunca inventes rutas ni resultados. Responde en español de México (tutea; nunca voseo), breve, \
+archivo y resume tú en dos o tres frases. Al crear un documento no preguntes el título: si no lo dieron, se pone uno con la fecha. Nunca inventes rutas ni resultados. Responde en español de México (tutea; nunca voseo), breve, \
 sin markdown, porque se lee en voz alta."
         .to_string()
 }
@@ -142,7 +142,8 @@ pub fn es_dictar(instruccion: &str) -> bool {
 /// «Termina el dictado», «deja de dictar», «ya acabé de dictar».
 pub fn es_fin_dictado(instruccion: &str) -> bool {
     let t = instruccion.to_lowercase();
-    ["termina el dictado", "terminar el dictado", "deja de dictar", "fin del dictado", "para de dictar", "detén el dictado",
+    ["termina el dictado", "terminar el dictado", "deja de dictar", "detener dictado", "detener el dictado", "terminar dictado",
+     "termina dictado", "detén dictado", "deten dictado", "fin del dictado", "para de dictar", "detén el dictado",
      "deten el dictado", "acabé de dictar", "acabe de dictar", "terminé de dictar", "termine de dictar", "para el dictado", "termina de dictar"]
         .iter()
         .any(|f| t.contains(f))
@@ -360,11 +361,15 @@ impl Agente {
             let texto = self.herramienta(h, &json!({"pedido": instruccion}))?;
             paso(&format!("{h} → {}", texto.chars().take(160).collect::<String>()));
             let mut respuesta = texto.split(" (hice: ").next().unwrap_or(&texto).trim().to_string();
-            // «abre el editor y vamos a escribir»: abierto el documento, se empieza a dictar
-            if self.modo == Modo::Principal && es_dictar(instruccion) {
+            // «abre el editor y vamos a escribir»: abierto el documento, se trae al frente y se dicta
+            if self.modo == Modo::Principal && es_dictar(instruccion) && texto.contains("IureEditor") {
+                if let Some(p) = &self.portal {
+                    esc::traer_al_frente(p, "iureeditor");
+                }
                 if let Some(g) = &self.ganchos {
                     (g.dictar)(true);
-                    respuesta += " Ya puedes dictar; para terminar di «oye compu, termina el dictado».";
+                    // la respuesta del sub-agente puede pedir datos («¿qué título?»): aquí ya no se pregunta
+                    respuesta = "Listo, abrí el documento en IureEditor. Ya puedes dictar; para terminar di «termina el dictado».".into();
                 }
             }
             return Ok(Informe { acciones: vec![format!("{h}({})", args_cortos(&json!({"pedido": instruccion})))], respuesta });
@@ -720,6 +725,9 @@ mod pruebas {
         assert!(pide_abrir("abre un editor de texto y vamos a escribir unas cosas"));
         assert!(!pide_abrir("te voy a dictar"));
         assert!(es_fin_dictado("termina el dictado"));
+        assert!(es_fin_dictado("Detener dictado"));
+        assert!(es_fin_dictado("Terminar dictado"));
+        assert!(es_fin_dictado("deja de dictar"));
         assert!(!es_dictar("termina el dictado"));
         assert!(!es_dictar("abre la calculadora"));
     }

@@ -344,6 +344,21 @@ pub fn volumen(accion: &str, cantidad: Option<u32>) -> Result<String> {
     Ok(msg)
 }
 
+/// Trae al frente una app ya abierta como lo haría el usuario: Super, su nombre y Enter.
+/// GNOME no deja que otra app tome el foco sola, pero el teclado del portal sí puede.
+pub fn traer_al_frente(portal: &crate::portal::Portal, nombre: &str) {
+    const SUPER: u32 = 0xffeb;
+    const ENTER: u32 = 0xff0d;
+    // la ventana del editor tarda en aparecer
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    portal.teclas(vec![SUPER]);
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    portal.escribir(nombre.to_string());
+    std::thread::sleep(std::time::Duration::from_millis(900));
+    portal.teclas(vec![ENTER]);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+}
+
 pub fn hora_fecha() -> String {
     use chrono::{Datelike, Timelike};
     let n = chrono::Local::now();
