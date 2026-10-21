@@ -18,7 +18,9 @@ fn sistema() -> String {
     format!(
         "Eres IureVoz, un asistente que controla el escritorio Linux (GNOME) de quien te habla. \
 La instrucción viene de un reconocedor de voz y puede tener errores: interpreta la intención. \
-Usa SOLO las herramientas disponibles; si algo no se puede hacer con ellas, dilo. \
+Usa SOLO las herramientas disponibles. Si para hacerlo hay que trabajar en el sistema (crear o editar un \
+script o programa, ejecutar comandos, instalar o configurar, mover, copiar, renombrar o borrar archivos) usa \
+pedir_a_claude si está disponible; nunca lo intentes tecleando en una terminal. Si no está, di que no puedes. \
 Si la instrucción menciona archivos, carpetas, PDF, escritos, grabaciones, juntas, transcripciones o el editor, \
 usa expedientes_y_apps (son archivos de este equipo, nunca de internet). Para proyectos, tareas, vencimientos o \
 expedientes en Iurefficient usa consultar_iurefficient. \
@@ -189,6 +191,21 @@ fn herramientas(con_claude: bool) -> Value {
 /// Pide confirmación y, si se concede, lanza la tarea con Claude. Devuelve qué pasó.
 pub type Delegar = Box<dyn Fn(&str) -> Result<String> + Send + Sync>;
 
+/// ¿Es trabajo de sistema que las herramientas básicas no hacen (scripts, comandos, instalar,
+/// configurar, mover o renombrar archivos)? Va a Claude Code. Se decide en código: el modelo
+/// tiende a intentarlo con «teclas» y «escribir» o a decir que no puede.
+pub fn es_tarea_de_sistema(instruccion: &str) -> bool {
+    let t = instruccion.to_lowercase();
+    const CLAVES: &[&str] = &[
+        "script", "programa que", "programita", "código", "codigo", "python", "bash", "comando", "terminal y ejecuta",
+        "ejecuta ", "instala", "desinstala", "configura", "actualiza el sistema", "actualiza los paquetes",
+        "renombra", "mueve los", "mueve el", "mueve la", "copia los", "copia el", "copia la", "borra los", "borra el",
+        "borra la", "elimina los", "comprime", "descomprime", "respalda", "respaldo", "cron", "servicio de",
+        "permisos de", "espacio en disco", "procesos", "git ", "repositorio", "compila",
+    ];
+    CLAVES.iter().any(|c| t.contains(c))
+}
+
 /// ¿La instrucción habla de archivos o apps de la suite? Se decide en código: los modelos
 /// chicos confunden «busca el archivo X» con buscar en internet.
 pub fn es_de_la_suite(instruccion: &str) -> bool {
@@ -231,6 +248,11 @@ fn pide_web(t: &str) -> bool {
     ["internet", "la web", "en web", "google", "en línea", "en linea", "navegador", "wikipedia", "sitio", "http", ".com", ".mx", "url"]
         .iter()
         .any(|c| t.contains(c))
+}
+
+fn primera_mayuscula(t: &str) -> String {
+    let mut c = t.trim().trim_end_matches('.').chars();
+    c.next().map(|p| p.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
 pub struct Agente {
@@ -347,6 +369,12 @@ impl Agente {
                 Err(e) => format!("{}.", format!("{e:#}").trim_end_matches('.')),
             };
             return Ok(Informe { acciones: vec![texto], respuesta });
+        }
+        // trabajo de sistema: a Claude Code (pide permiso antes de empezar)
+        if self.modo == Modo::Principal && self.delegar.is_some() && es_tarea_de_sistema(instruccion) {
+            paso("tarea de sistema → Claude");
+            let r = self.delegar.as_ref().unwrap()(instruccion)?;
+            return Ok(Informe { acciones: vec![format!("pedir_a_claude → {r}")], respuesta: primera_mayuscula(&r) + "." });
         }
         let directo = if self.modo != Modo::Principal {
             None
@@ -716,6 +744,18 @@ mod pruebas {
         assert!(es_de_iurefficient("crea una tarea para mañana: llamar al cliente Pérez"));
         assert!(es_de_iurefficient("agéndame una reunión el jueves a las 10"));
         assert!(es_de_iurefficient("márcalas como leídas"));
+    }
+
+    #[test]
+    fn tareas_para_claude() {
+        assert!(es_tarea_de_sistema("crea un script que respalde mis documentos cada noche"));
+        assert!(es_tarea_de_sistema("instala gimp"));
+        assert!(es_tarea_de_sistema("renombra las fotos de descargas con la fecha"));
+        assert!(es_tarea_de_sistema("¿cuánto espacio en disco me queda?"));
+        assert!(!es_tarea_de_sistema("abre la calculadora"));
+        assert!(!es_tarea_de_sistema("¿qué tengo hoy?"));
+        assert!(!es_tarea_de_sistema("¿quién fue Porfirio Díaz?"));
+        assert!(!es_tarea_de_sistema("sube el volumen"));
     }
 
     #[test]

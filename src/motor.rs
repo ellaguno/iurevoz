@@ -201,6 +201,8 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
     // desde cuándo se espera una instrucción que no llega
     let mut esperando_desde: Option<std::time::Instant> = None;
     let mut ultimo_envio: Option<std::time::Instant> = None;
+    // última vez que el reconocedor oyó voz (texto parcial): una respuesta en curso no se corta
+    let mut oyo_voz = std::time::Instant::now();
     let modo = |r: &Rutas| r.estado.modo_comando.load(std::sync::atomic::Ordering::Relaxed);
 
     let emitir = |salidas: Vec<Salida>, cfg: &Config, punt: &mut Puntuador, instr: &mut Option<EnCurso>, id: &mut usize| {
@@ -367,6 +369,9 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                     grabacion.extend_from_slice(&m16);
                 }
                 let s = r.alimentar(&m16);
+                if s.iter().any(|x| matches!(x, Salida::Parcial(t) if !t.trim().is_empty())) {
+                    oyo_voz = std::time::Instant::now();
+                }
                 emitir(s, &cfg, &mut punt, &mut instr, &mut id);
                 // la instrucción termina tras ~1 s sin voz después de la última frase
                 // (una respuesta para otro programa puede pedir una pausa más larga, p. ej. al dictar)
@@ -382,10 +387,24 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                     let capturando = rutas.estado.captura.lock().unwrap().is_some();
                     // a una pregunta se le da más tiempo: primero hay que oírla
                     let espera = if capturando { ESPERA_RESPUESTA } else { ESPERA_INSTRUCCION };
-                    if desde.elapsed() >= espera && rutas.estado.pendiente.lock().unwrap().is_none() {
+                    let hablando_ahora = oyo_voz.elapsed() < std::time::Duration::from_secs(2);
+                    if desde.elapsed() >= espera && !hablando_ahora && rutas.estado.pendiente.lock().unwrap().is_none() {
                         if let Some((tx, _)) = rutas.estado.captura.lock().unwrap().take() {
-                            let _ = tx.send(String::new());
+                            // lo que el reconocedor tenga a medias ES la respuesta: antes se perdía
+                            // y al cerrar el micrófono se tecleaba en la ventana activa
+                            let resto: Vec<String> = r
+                                .terminar()
+                                .into_iter()
+                                .filter_map(|x| if let Salida::Final(t) = x { Some(t) } else { None })
+                                .collect();
+                            let t = resto.join(" ").trim().to_string();
+                            if !t.is_empty() {
+                                ev.enviar(Evento::Estado(format!("Respuesta: «{t}»")));
+                            }
+                            let _ = tx.send(t);
                         }
+                        // lo que quede al cerrar el micrófono no se teclea
+                        ultimo_envio = Some(std::time::Instant::now());
                         rutas.estado.modo_comando.store(false, std::sync::atomic::Ordering::Relaxed);
                         let _ = rutas.control.send(Control::FinComando);
                         esperando_desde = None;
