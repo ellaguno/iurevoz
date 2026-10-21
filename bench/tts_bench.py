@@ -22,6 +22,7 @@ Uso:
   uv run tts_bench.py --solo supertonic,piper-claude
   uv run tts_bench.py --solo ninguna --wavs chatterbox=salidas/chatterbox
   uv run --with distillmos tts_bench.py --mos
+  uv run tts_bench.py --normalizar                      # pasa el texto por `iurevoz normalizar` (como la app)
   uv run tts_bench.py --exportar-frases                 # imprime las frases (para generarlas con otro modelo)
 """
 
@@ -29,6 +30,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -72,6 +74,7 @@ def _numero(m: re.Match) -> str:
 
 def normalizar(t: str) -> str:
     t = t.lower().replace("%", " por ciento ").replace("$", " ")
+    t = re.sub(r"\b(\d{1,3})((?:\.\d{3})+)\b", lambda m: m.group(1) + m.group(2).replace(".", ","), t)  # 1.160 → 1,160
     t = re.sub(r"\d[\d,]*(\.\d+)?", _numero, t)
     t = re.sub(r"[^\wáéíóúüñ ]", " ", t)
     return " ".join(t.split())
@@ -84,7 +87,8 @@ def cer(ref: str, hip: str) -> float:
         prev, d[0] = d[0], i
         for j, cb in enumerate(b, 1):
             prev, d[j] = d[j], min(d[j] + 1, d[j - 1] + 1, prev + (ca != cb))
-    return d[-1] / max(1, len(a))
+    # tope de 1: una alucinación del ASR (repetir «88» veinte veces) no debe dominar el promedio
+    return min(1.0, d[-1] / max(1, len(a)))
 
 
 def buscar(sub: str) -> Path | None:
@@ -122,10 +126,15 @@ def main() -> None:
     p.add_argument("--salida", type=Path, default=AQUI / "tts-salidas", help="aquí se guardan los WAV generados")
     p.add_argument("--json", type=Path, help="guarda los resultados por frase")
     p.add_argument("--mostrar-texto", action="store_true", help="imprime lo que entendió el ASR cuando hay errores")
+    p.add_argument("--normalizar", nargs="?", const=str(AQUI.parent / "target/release/iurevoz"), metavar="BIN",
+                   help="normaliza el texto con `BIN normalizar` antes de sintetizar (por omisión, el binario de release)")
     p.add_argument("--exportar-frases", action="store_true", help="imprime el texto de las frases y termina")
     a = p.parse_args()
 
     frases = leer_frases(a.frases)
+    if a.normalizar:
+        r = subprocess.run([a.normalizar, "normalizar"], input="\n".join(t for t, _ in frases), capture_output=True, text=True, check=True)
+        frases = [(t, lectura) for t, (_, lectura) in zip(r.stdout.splitlines(), frases)]
     if a.exportar_frases:
         print("\n".join(t for t, _ in frases))
         return
