@@ -14,6 +14,7 @@ mod escribir;
 mod escritorio;
 mod iure;
 mod llm_local;
+mod mcp_voz;
 mod modelos;
 mod motor;
 mod normalizar;
@@ -140,6 +141,9 @@ fn main() -> Result<()> {
             // da tiempo a que el portal termine de teclear
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
+        // F6b: servidor MCP por stdio (Claude Code/Desktop hablan y escuchan a través de la app)
+        Some("--mcp") => std::process::exit(mcp_voz::servir()),
+        Some("registrar-mcp") => println!("{}", mcp_voz::registrar_en_claude_code()?),
         Some("mi-dia") => {
             // «¿qué tengo hoy?» desde la terminal (o un atajo que lo pase a `notify-send`)
             println!("{}", resumen::mi_dia()?);

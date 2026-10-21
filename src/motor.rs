@@ -143,6 +143,9 @@ fn para_claude(instruccion: &str) -> Option<String> {
 /// Tiempo máximo esperando una instrucción que no empieza.
 const ESPERA_INSTRUCCION: std::time::Duration = std::time::Duration::from_secs(8);
 
+/// Tiempo máximo esperando la respuesta a una pregunta de otro programa (incluye oírla).
+const ESPERA_RESPUESTA: std::time::Duration = std::time::Duration::from_secs(25);
+
 /// Silencio tras la última frase que da por terminada una instrucción.
 const FIN_INSTRUCCION: std::time::Duration = std::time::Duration::from_millis(1000);
 
@@ -221,6 +224,11 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                         e.agregar(&t);
                         continue;
                     }
+                    // ¿respuesta que espera otro programa? (F6b) Se toma tal cual, sin palabra clave
+                    if rutas.estado.captura.lock().unwrap().is_some() {
+                        *instr = Some(EnCurso::new(&t));
+                        continue;
+                    }
                     // ¿empieza una instrucción?
                     let palabra = &cfg.escucha.palabra;
                     let inicio = if modo(&rutas) {
@@ -264,6 +272,11 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
         rutas.estado.modo_comando.store(false, std::sync::atomic::Ordering::Relaxed);
         let _ = rutas.control.send(Control::FinComando);
         let i = e.texto.trim().to_string();
+        if let Some((tx, _)) = rutas.estado.captura.lock().unwrap().take() {
+            ev.enviar(Evento::Estado(format!("Respuesta: «{i}»")));
+            let _ = tx.send(i);
+            return;
+        }
         if i.is_empty() {
             return;
         }
@@ -337,7 +350,9 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                 let s = r.alimentar(&m16);
                 emitir(s, &cfg, &mut punt, &mut instr, &mut id);
                 // la instrucción termina tras ~1 s sin voz después de la última frase
-                if instr.as_ref().is_some_and(|e| !e.hablando && e.ultimo.elapsed() >= FIN_INSTRUCCION) {
+                // (una respuesta para otro programa puede pedir una pausa más larga, p. ej. al dictar)
+                let fin = rutas.estado.captura.lock().unwrap().as_ref().map_or(FIN_INSTRUCCION, |(_, p)| *p);
+                if instr.as_ref().is_some_and(|e| !e.hablando && e.ultimo.elapsed() >= fin) {
                     despachar(&mut instr, &cfg, &mut id);
                     ultimo_envio = Some(std::time::Instant::now());
                     esperando_desde = None;
@@ -345,7 +360,13 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                 // modo comando sin instrucción: se cancela a los 8 s para no dejar el reconocedor andando
                 if instr.is_none() && modo(&rutas) {
                     let desde = *esperando_desde.get_or_insert_with(std::time::Instant::now);
-                    if desde.elapsed() >= ESPERA_INSTRUCCION && rutas.estado.pendiente.lock().unwrap().is_none() {
+                    let capturando = rutas.estado.captura.lock().unwrap().is_some();
+                    // a una pregunta se le da más tiempo: primero hay que oírla
+                    let espera = if capturando { ESPERA_RESPUESTA } else { ESPERA_INSTRUCCION };
+                    if desde.elapsed() >= espera && rutas.estado.pendiente.lock().unwrap().is_none() {
+                        if let Some((tx, _)) = rutas.estado.captura.lock().unwrap().take() {
+                            let _ = tx.send(String::new());
+                        }
                         rutas.estado.modo_comando.store(false, std::sync::atomic::Ordering::Relaxed);
                         let _ = rutas.control.send(Control::FinComando);
                         esperando_desde = None;
@@ -472,7 +493,9 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
             std::sync::Arc::new(crate::agente::Ganchos {
                 confirmar: Box::new(move |desc: &str| {
                     let (tx, rx) = crossbeam_channel::bounded(1);
-                    let _ = c1.send(Control::Permiso(desc.to_string(), format!("Voy a {desc}."), tx));
+                    // los resúmenes de F4 ya son una frase («Registro una hora en…»); los demás, una acción
+                    let hablada = if desc.chars().next().is_some_and(char::is_uppercase) { desc.to_string() } else { format!("Voy a {desc}.") };
+                    let _ = c1.send(Control::Permiso(desc.to_string(), hablada, tx));
                     rx.recv_timeout(std::time::Duration::from_secs(110)).unwrap_or(false)
                 }),
                 pausar_escucha: Box::new(move |si| drop(c2.send(Control::PausarVigilia(si)))),

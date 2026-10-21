@@ -63,6 +63,8 @@ pub struct App {
     renovar_iure: bool,
     /// Formulario para entrar a Iurefficient: (contraseña, código, pide código, visible).
     entrada_iure: (String, String, bool, bool),
+    /// F6b: ¿IureVoz está registrado como servidor MCP en Claude Code? y registro en curso.
+    mcp_claude: (bool, Option<crossbeam_channel::Receiver<Result<String, String>>>),
     /// Mensajes del entrenamiento del detector en curso.
     entrenando: Option<crossbeam_channel::Receiver<Result<String, String>>>,
     progreso_entrenamiento: String,
@@ -92,6 +94,7 @@ impl App {
             esperando_comando: false,
             atajos_gnome: crate::atajos_gnome::instalados(),
             renovar_iure: false,
+            mcp_claude: (crate::mcp_voz::registrado_en_claude_code(), None),
             entrada_iure: Default::default(),
             entrenando: None,
             progreso_entrenamiento: String::new(),
@@ -406,6 +409,9 @@ impl App {
                     .changed();
                 ui.end_row();
             }
+            ui.label("Voz para Claude");
+            self.fila_mcp_claude(ui);
+            ui.end_row();
 
             ui.label(RichText::new("Siempre escuchando").strong());
             if ui.checkbox(&mut self.cfg.escucha.siempre, "esperar la palabra clave").changed() {
@@ -602,6 +608,39 @@ fn ajustes_llm(ui: &mut egui::Ui, id: &str, c: &mut Correccion) -> bool {
 impl App {
     /// Qué ve IureVoz de la suite Iurefficient: apps instaladas, unidades de IureDav y cuenta.
     /// Los datos se calculan en otro hilo (`iure::panorama`): aquí solo se dibujan.
+    /// F6b: registrar `iurevoz --mcp` en Claude Code (corre `claude mcp add` aparte).
+    fn fila_mcp_claude(&mut self, ui: &mut egui::Ui) {
+        if let Some(rx) = &self.mcp_claude.1 {
+            match rx.try_recv() {
+                Ok(Ok(m)) => {
+                    self.estado = m;
+                    self.mcp_claude = (crate::mcp_voz::registrado_en_claude_code(), None);
+                }
+                Ok(Err(e)) => {
+                    self.error = Some(e);
+                    self.mcp_claude.1 = None;
+                }
+                Err(_) => {
+                    ui.spinner();
+                    return;
+                }
+            }
+        }
+        ui.horizontal(|ui| {
+            if self.mcp_claude.0 {
+                ui.label("✔ Claude Code puede hablarte, preguntarte y tomarte dictado");
+            } else if ui
+                .button("Registrar en Claude Code")
+                .on_hover_text("Agrega IureVoz como servidor MCP (decir, preguntar sí/no, preguntar por voz, dictar) con `claude mcp add --scope user`")
+                .clicked()
+            {
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                std::thread::spawn(move || drop(tx.send(crate::mcp_voz::registrar_en_claude_code().map_err(|e| format!("{e:#}")))));
+                self.mcp_claude.1 = Some(rx);
+            }
+        });
+    }
+
     fn panel_suite(&mut self, ui: &mut egui::Ui) {
         let verde = Color32::from_rgb(60, 160, 60);
         egui::CollapsingHeader::new(RichText::new("Iurefficient").strong()).default_open(false).show(ui, |ui| {
