@@ -152,6 +152,13 @@ fn solo_palabra_clave(texto: &str, palabra: &str) -> bool {
     !t.is_empty() && t.len() <= clave.len() && t.iter().all(|w| clave.contains(w))
 }
 
+/// ¿La respuesta espera que el usuario conteste?
+fn invita_a_contestar(r: &str) -> bool {
+    let r = r.trim();
+    let bajo = r.to_lowercase();
+    r.ends_with('?') || ["dime ", "cuéntame", "cuentame", "¿cuál", "¿qué", "¿quieres"].iter().any(|p| bajo.starts_with(p) || bajo.contains(&format!(". {p}")))
+}
+
 /// Tiempo máximo esperando la respuesta a una pregunta de otro programa (incluye oírla).
 const ESPERA_RESPUESTA: std::time::Duration = std::time::Duration::from_secs(25);
 
@@ -200,8 +207,9 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
     let mut instr: Option<EnCurso> = None;
     // detector de palabra clave; se crea al primer audio de vigilia
     let mut vigilia: Option<crate::vigilia::Vigilia> = None;
-    // otro detector de voz (VAD) para oír órdenes de callar mientras la app habla
-    let mut barrera: Option<crate::vigilia::Vigilia> = None;
+    // audio real mientras la app habla, para oír «cállate»: se revisan los últimos 1.6 s cada segundo
+    let mut barrera: Vec<f32> = Vec::new();
+    let mut barrera_nuevo = 0usize;
     // desde cuándo se espera una instrucción que no llega
     let mut esperando_desde: Option<std::time::Instant> = None;
     let mut ultimo_envio: Option<std::time::Instant> = None;
@@ -368,32 +376,37 @@ fn hilo_asr(mut cfg: Config, rx: Receiver<Orden>, rutas: Rutas, ev: Emisor) {
                 if tasa as i32 != SR {
                     continue; // (el micrófono va a 16 kHz; no se mezcla con el remuestreo del dictado)
                 }
-                if barrera.is_none() {
-                    barrera = modelos::rutas_moonshine().and_then(|m| crate::vigilia::Vigilia::new(&m.vad)).ok();
+                barrera_nuevo += muestras.len();
+                barrera.extend_from_slice(&muestras);
+                let max = SR as usize * 3;
+                if barrera.len() > max {
+                    barrera.drain(..barrera.len() - max);
                 }
-                let Some(b) = barrera.as_mut() else { continue };
-                let control = rutas.control.clone();
-                b.alimentar(&muestras, |tramo| {
+                // sin cancelación de eco el micrófono oye a la app; «cállate» cae a media frase,
+                // así que no sirve buscar inicios de voz: se transcribe una ventana corrida
+                if barrera_nuevo >= SR as usize {
+                    barrera_nuevo = 0;
+                    let tramo = &barrera[barrera.len().saturating_sub(SR as usize * 8 / 5)..];
                     let t = r.transcribir_corto(tramo);
-                    if std::env::var_os("IUREVOZ_LOG").is_some() && !t.trim().is_empty() {
-                        eprintln!("[iurevoz] mientras habla: {t:?}");
-                    }
                     if !t.trim().is_empty() {
-                        let _ = control.send(Control::Interrupcion(t));
+                        if std::env::var_os("IUREVOZ_LOG").is_some() {
+                            eprintln!("[iurevoz] mientras habla: {t:?}");
+                        }
+                        let _ = rutas.control.send(Control::Interrupcion(t));
                     }
-                    false
-                });
+                }
             }
             Orden::Audio { muestras, tasa } => {
                 let Some(r) = rec.as_mut() else { continue };
                 let Some(m16) = a_16k(&mut remuestreo, muestras, tasa) else { continue };
-                if let Some(b) = barrera.as_mut() {
-                    b.reiniciar();
-                }
                 // mientras la app habla el micrófono llega en ceros: la espera de una
                 // instrucción o una respuesta empieza cuando termina de hablar
                 if m16.iter().all(|x| *x == 0.0) {
                     esperando_desde = None;
+                } else {
+                    // ya no habla: la ventana de «cállate» empieza de cero la próxima vez
+                    barrera.clear();
+                    barrera_nuevo = 0;
                 }
                 if let Some(v) = vigilia.as_mut() {
                     v.reiniciar(); // al volver a vigilar se empieza limpio
@@ -603,8 +616,8 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
                 historial.push(serde_json::json!({"role": "assistant", "content": format!("{}{hecho}", inf.respuesta)}));
                 let sobran = historial.len().saturating_sub(MEMORIA_TURNOS * 2);
                 historial.drain(..sobran);
-                // si el asistente preguntó algo, se queda escuchando la respuesta
-                if inf.respuesta.trim_end().ends_with('?') {
+                // si el asistente preguntó algo («¿…?», «Dime cuál…»), se queda escuchando la respuesta
+                if invita_a_contestar(&inf.respuesta) {
                     let _ = control.send(Control::Seguir);
                 }
                 ultima = std::time::Instant::now();
@@ -729,6 +742,9 @@ mod pruebas {
         assert_eq!(si_o_no("Permite"), Some(true));
         assert_eq!(si_o_no("el clima de hoy"), None);
         assert!(solo_palabra_clave("Oye", "oye compu"));
+        assert!(invita_a_contestar("Dime cuál es tu duda y con gusto te ayudo."));
+        assert!(invita_a_contestar("No pude leerlo. ¿Quieres que intente con otro?"));
+        assert!(!invita_a_contestar("Benito Juárez fue presidente de México."));
         assert!(solo_palabra_clave("Oye, compu.", "oye compu"));
         assert!(!solo_palabra_clave("Oye, te voy a dictar", "oye compu"));
         assert!(!solo_palabra_clave("", "oye compu"));

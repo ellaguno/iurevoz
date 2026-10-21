@@ -141,9 +141,17 @@ pub fn es_dictar(instruccion: &str) -> bool {
             .any(|f| t.contains(f))
 }
 
-/// «Termina el dictado», «deja de dictar», «ya acabé de dictar».
+/// «Termina el dictado», «deja de dictar», «ya acabé de dictar». Tolera errores del
+/// reconocedor en frases cortas («Termina Victila»).
 pub fn es_fin_dictado(instruccion: &str) -> bool {
     let t = instruccion.to_lowercase();
+    if crate::correccion::palabras(&t).len() <= 4
+        && ["termina el dictado", "termina dictado", "terminar dictado", "deja de dictar", "detén el dictado", "detener dictado"]
+            .iter()
+            .any(|f| crate::vigilia::coincide(&t, f, 0.4).is_some())
+    {
+        return true;
+    }
     ["termina el dictado", "terminar el dictado", "deja de dictar", "detener dictado", "detener el dictado", "terminar dictado",
      "termina dictado", "detén dictado", "deten dictado", "fin del dictado", "para de dictar", "detén el dictado",
      "deten el dictado", "acabé de dictar", "acabe de dictar", "terminé de dictar", "termine de dictar", "para el dictado", "termina de dictar"]
@@ -414,18 +422,21 @@ impl Agente {
             None
         };
         if let Some(h) = directo {
+            let editor_ya_abierto = es_dictar(instruccion) && esc::corre("iureditor");
             let texto = self.herramienta(h, &json!({"pedido": instruccion}))?;
             paso(&format!("{h} → {}", texto.chars().take(160).collect::<String>()));
             let mut respuesta = texto.split(" (hice: ").next().unwrap_or(&texto).trim().to_string();
-            // «abre el editor y vamos a escribir»: abierto el documento, se trae al frente y se dicta
+            // «abre el editor y vamos a escribir»: abierto el documento, se dicta
             if self.modo == Modo::Principal && es_dictar(instruccion) && texto.contains("IureEditor") {
-                if let Some(p) = &self.portal {
-                    esc::traer_al_frente(p, "iureeditor");
-                }
                 if let Some(g) = &self.ganchos {
                     (g.dictar)(true);
-                    // la respuesta del sub-agente puede pedir datos («¿qué título?»): aquí ya no se pregunta
-                    respuesta = "Listo, abrí el documento en IureEditor. Ya puedes dictar; para terminar di «termina el dictado».".into();
+                    // la respuesta del sub-agente puede pedir datos («¿qué título?»): aquí ya no se pregunta.
+                    // Si el editor ya estaba abierto, GNOME no le da el foco: hay que hacer clic.
+                    respuesta = if editor_ya_abierto {
+                        "Abrí el documento en IureEditor. Haz clic en su ventana y dicta; para terminar di «termina el dictado».".into()
+                    } else {
+                        "Listo, abrí el documento en IureEditor. Ya puedes dictar; para terminar di «termina el dictado».".into()
+                    };
                 }
             }
             return Ok(Informe { acciones: vec![format!("{h}({})", args_cortos(&json!({"pedido": instruccion})))], respuesta });
@@ -588,7 +599,6 @@ impl Agente {
             "leer_pagina" if !pide_web(&self.instruccion.lock().unwrap()) && !self.instruccion.lock().unwrap().to_lowercase().contains("página") => {
                 bail!("no se pidió leer una página web")
             }
-            "consultar_pagina" if !pide_web(&self.instruccion.lock().unwrap()) => bail!("no se pidió consultar una página web"),
             "consultar_pagina" => {
                 let t = esc::texto_de_pagina(&s("url")?)?;
                 Ok(t.chars().take(6000).collect())
@@ -813,6 +823,9 @@ mod pruebas {
         assert!(es_fin_dictado("Detener dictado"));
         assert!(es_fin_dictado("Terminar dictado"));
         assert!(es_fin_dictado("deja de dictar"));
+        assert!(es_fin_dictado("Termina Victila"));
+        assert!(!es_fin_dictado("termina la frase con un punto"));
+        assert!(!es_fin_dictado("se terminó el día"));
         assert!(!es_dictar("termina el dictado"));
         assert!(!es_dictar("abre la calculadora"));
     }

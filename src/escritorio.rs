@@ -344,19 +344,9 @@ pub fn volumen(accion: &str, cantidad: Option<u32>) -> Result<String> {
     Ok(msg)
 }
 
-/// Trae al frente una app ya abierta como lo haría el usuario: Super, su nombre y Enter.
-/// GNOME no deja que otra app tome el foco sola, pero el teclado del portal sí puede.
-pub fn traer_al_frente(portal: &crate::portal::Portal, nombre: &str) {
-    const SUPER: u32 = 0xffeb;
-    const ENTER: u32 = 0xff0d;
-    // la ventana del editor tarda en aparecer (y si no existe aún, Enter abriría otra)
-    std::thread::sleep(std::time::Duration::from_millis(4000));
-    portal.teclas(vec![SUPER]);
-    std::thread::sleep(std::time::Duration::from_millis(1000));
-    portal.escribir(nombre.to_string());
-    std::thread::sleep(std::time::Duration::from_millis(1300));
-    portal.teclas(vec![ENTER]);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+/// ¿Hay un proceso con este nombre exacto? (p. ej. «iureditor» ya abierto)
+pub fn corre(nombre: &str) -> bool {
+    Command::new("pgrep").args(["-x", nombre]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 pub fn hora_fecha() -> String {
@@ -411,13 +401,49 @@ pub fn texto_de_pagina(url: &str) -> Result<String> {
     if ["duckduckgo.", "google.", "bing.", "search.yahoo.", "startpage.", "ecosia."].iter().any(|b| host.contains(b)) {
         bail!("esa es una página de resultados de búsqueda; no se lee. Responde tú brevemente o abre un resultado concreto");
     }
-    let mut r = ureq::get(&url).header("User-Agent", "Mozilla/5.0 iurevoz").call()?;
+    let mut r = match ureq::get(&url).header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) iurevoz").header("Accept-Language", "es-MX,es;q=0.9").call() {
+        Ok(r) => r,
+        Err(ureq::Error::StatusCode(c @ (401 | 403 | 429))) => bail!(
+            "el sitio no deja leer su página automáticamente ({c}). Para encabezados usa su feed RSS si lo conoces \
+             (p. ej. rss.nytimes.com/services/xml/rss/nyt/HomePage.xml) o propón otro medio"
+        ),
+        Err(e) => return Err(e.into()),
+    };
     let html = r.body_mut().with_config().limit(4 << 20).read_to_string()?;
+    // un feed RSS/Atom: los títulos son los encabezados
+    let inicio = html.trim_start().get(..400).unwrap_or(html.trim_start()).to_lowercase();
+    if inicio.contains("<rss") || inicio.contains("<feed") {
+        let titulos = titulos_de_feed(&html);
+        if !titulos.is_empty() {
+            return Ok(titulos.join("\n"));
+        }
+    }
     let texto = extraer_texto(&html);
     if texto.trim().is_empty() {
         bail!("no encontré texto legible en la página");
     }
     Ok(texto)
+}
+
+/// Los `<title>` de un feed RSS/Atom (sin CDATA ni entidades básicas).
+fn titulos_de_feed(xml: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    let mut resto = xml;
+    while let Some(i) = resto.find("<title") {
+        let tras = &resto[i..];
+        let Some(a) = tras.find('>') else { break };
+        let Some(b) = tras.find("</title>") else { break };
+        if a < b {
+            let t = tras[a + 1..b].trim().trim_start_matches("<![CDATA[").trim_end_matches("]]>").trim();
+            let t = t.replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'");
+            if !t.is_empty() {
+                v.push(t);
+            }
+        }
+        resto = &tras[b + 8..];
+    }
+    v.truncate(40);
+    v
 }
 
 fn extraer_texto(html: &str) -> String {
