@@ -2570,6 +2570,7 @@ dependencies = [
  "iurefficient-connect",
  "libc",
  "rand 0.10.3",
+ "reqwest",
  "rustfft",
  "serde",
  "serde_json",

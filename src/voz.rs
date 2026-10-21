@@ -156,6 +156,16 @@ impl Sintetizador {
 
 /// Deja el texto apto para leerse en voz alta: sin código, símbolos ni rutas completas.
 pub fn para_voz(texto: &str) -> String {
+    limpiar_palabras(&sin_codigo(texto))
+}
+
+/// Como `para_voz`, y además cifras, montos, fechas, abreviaturas y siglas a palabras.
+/// Es lo que llega al TTS; `para_voz` sirve para mostrar texto (notificaciones).
+pub fn para_hablar(texto: &str) -> String {
+    limpiar_palabras(&crate::normalizar::normalizar(&sin_codigo(texto)))
+}
+
+fn sin_codigo(texto: &str) -> String {
     // bloques de código: no se leen
     let mut t = String::new();
     for (i, parte) in texto.split("```").enumerate() {
@@ -179,7 +189,10 @@ pub fn para_voz(texto: &str) -> String {
             sin_codigo.push_str(ruta);
         }
     }
-    let t = sin_codigo;
+    sin_codigo
+}
+
+fn limpiar_palabras(t: &str) -> String {
     let palabras: Vec<String> = t
         .split_whitespace()
         .filter_map(|p| {
@@ -327,7 +340,7 @@ impl Voz {
     }
 
     pub fn decir(&self, texto: impl Into<String>) {
-        let t = para_voz(&texto.into());
+        let t = para_hablar(&texto.into());
         if !t.trim().is_empty() {
             let _ = self.tx.send(Orden::Decir(t, self.generacion.load(Ordering::Relaxed)));
         }

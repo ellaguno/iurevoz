@@ -227,6 +227,70 @@ pub fn ofrece(nombre: &str) -> bool {
     con_cliente(|c| Ok(c.herramientas.iter().any(|t| t.name == nombre))).unwrap_or(false)
 }
 
+// ── F4 · escribir con la sesión REST ─────────────────────────────────────────
+// El token MCP es de solo lectura: lo que escribe (horas, tareas, eventos) usa la sesión
+// compartida de la suite, la misma con que entran IureTranscribe e IureDav.
+
+static SESION: Mutex<Option<(Session, String)>> = Mutex::new(None);
+
+fn id_texto(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        v => v.to_string(),
+    }
+}
+
+/// Petición REST a la instancia con la sesión de la suite. Devuelve el JSON de la respuesta.
+pub fn rest(metodo: reqwest::Method, ruta: &str, cuerpo: Option<Value>) -> Result<Value> {
+    let mut g = SESION.lock().unwrap();
+    if g.is_none() {
+        let acc = cuenta().context("no hay cuenta de Iurefficient en este equipo")?;
+        let json = leer_secreto(&acc, "session")
+            .context("para escribir en Iurefficient hace falta tu sesión: entra con tu contraseña en Ajustes → Iurefficient")?;
+        let guardada: SessionExport = serde_json::from_str(&json).context("la sesión guardada no se entiende")?;
+        let sess = Session::new(acc, AGENTE_HTTP)?;
+        let yo = rt()
+            .block_on(sess.import(&guardada))
+            .context("tu sesión de Iurefficient venció: entra con tu contraseña en Ajustes → Iurefficient")?;
+        *g = Some((sess, id_texto(&yo.id)));
+    }
+    let (sess, _) = g.as_ref().unwrap();
+    let r = rt().block_on(async {
+        if metodo == reqwest::Method::POST {
+            // post_json renueva el acceso y repite si hace falta
+            return sess.post_json(ruta, cuerpo.as_ref().unwrap_or(&json!({}))).await;
+        }
+        let mut rb = sess.request(metodo, ruta).await?;
+        if let Some(b) = &cuerpo {
+            rb = rb.json(b);
+        }
+        let resp = rb.send().await?;
+        let st = resp.status();
+        let v: Value = resp.json().await.unwrap_or(Value::Null);
+        if !st.is_success() {
+            anyhow::bail!("{} {}", st.as_u16(), v["error"].as_str().or(v["message"].as_str()).unwrap_or(""));
+        }
+        Ok(v)
+    });
+    // la sesión pudo renovarse: se guarda para las demás apps de la suite
+    if let (Ok(j), Some(acc)) = (serde_json::to_string(&sess.export()), cuenta()) {
+        let _ = guardar_secreto(&acc, "session", &j);
+    }
+    if r.as_ref().is_err_and(|e| e.to_string().contains("401")) {
+        *g = None;
+    }
+    r
+}
+
+/// Id de usuario de quien usa IureVoz en la instancia.
+pub fn yo() -> Result<String> {
+    if SESION.lock().unwrap().is_none() {
+        rest(reqwest::Method::GET, "/api/auth/me", None)?;
+    }
+    Ok(SESION.lock().unwrap().as_ref().map(|(_, id)| id.clone()).unwrap_or_default())
+}
+
 // ── estado para la ventana ───────────────────────────────────────────────────
 
 /// Lo que la sección «Iurefficient» de Ajustes muestra. Se calcula en un hilo aparte:

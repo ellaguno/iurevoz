@@ -53,6 +53,10 @@ fn sistema_iure() -> String {
 proyectos y expedientes, sus tareas, vencimientos y documentos, y su día: sus tareas (mis_tareas), su agenda, \
 sus notificaciones, sus horas registradas (mis_horas) y clientes (buscar_cliente). Las herramientas son de solo lectura. \
 Para «qué tengo hoy» combina mis_tareas y agenda. \
+También puedes escribir, siempre con confirmación del usuario (la pide la herramienta, no la pidas tú): \
+registrar_horas, crear_tarea, crear_evento, marcar_notificaciones_leidas. Las fechas van como AAAA-MM-DD \
+calculadas desde hoy («mañana», «el jueves») y las horas como HH:MM de 24 horas. \
+Si la herramienta responde que el usuario no lo permitió, dilo y no insistas. \
 Para hablar de un proyecto por su nombre, búscalo primero (listar_proyectos con búsqueda) y usa su id. \
 Si piden abrir o ver algo en Iurefficient, usa abrir_en_iurefficient. \
 Responde en español, breve (dos o tres frases), sin markdown ni listas largas, porque se lee en voz alta; \
@@ -183,6 +187,8 @@ pub fn es_de_iurefficient(instruccion: &str) -> bool {
         // «mi día» (F2): tareas, agenda, avisos, horas y clientes de quien habla
         "qué tengo", "que tengo", "reunión", "reunion", "junta", "audiencia", "calendario", "notificaci", "aviso",
         "horas llevo", "mis horas", "horas registr", "hoja de horas", "cliente",
+        // F4: escrituras
+        "registra", "agend", "agénd", "evento", "cita ", "márca", "marca como leíd", "marca las",
     ];
     // «graba la junta», «qué tengo en Descargas»: eso es de las apps de escritorio
     const DE_ESCRITORIO: &[&str] = &["graba", "descargas", "documentos", "escritorio"];
@@ -239,6 +245,7 @@ impl Agente {
                 let mut v = crate::iure::herramientas().unwrap_or_else(|_| json!([]));
                 if let Some(a) = v.as_array_mut() {
                     a.push(herramienta_abrir_iure());
+                    a.extend(crate::escribir::herramientas());
                 }
                 v
             }
@@ -413,11 +420,17 @@ impl Agente {
             "consultar_iurefficient" => {
                 let mut sub = Agente::new(self.cfg.clone(), None, self.voz.clone());
                 sub.modo = Modo::Iure;
+                // F4: las escrituras se confirman con los mismos ganchos
+                sub.ganchos = self.ganchos.clone();
                 let inf = sub.ejecutar(&s("pedido")?, &[], |_| {})?;
                 let hecho = if inf.acciones.is_empty() { String::new() } else { format!(" (hice: {})", inf.acciones.join("; ")) };
                 Ok(format!("{}{hecho}", inf.respuesta))
             }
             "abrir_en_iurefficient" => crate::iure::abrir(&s("que")?, a["id"].as_str(), a["nombre"].as_str()),
+            n if self.modo == Modo::Iure && crate::escribir::es_herramienta(n) => {
+                let g = self.ganchos.clone();
+                crate::escribir::ejecutar(n, a, &move |d: &str| g.as_ref().is_some_and(|g| (g.confirmar)(d)))
+            }
             n if self.modo == Modo::Iure && crate::iure::es_herramienta(n) => crate::iure::llamar(n, a.clone()),
             "archivos" => crate::suite::archivos(a["carpeta"].as_str(), a["buscar"].as_str()),
             "abrir_archivo" => crate::suite::abrir(&s("ruta")?, a["con_editor"].as_bool().unwrap_or(false)),
@@ -643,6 +656,11 @@ mod pruebas {
         assert!(!es_de_iurefficient("graba la junta con Pérez"));
         assert!(es_de_la_suite("graba la junta con Pérez"));
         assert!(!es_de_iurefficient("¿qué tengo en Descargas?"));
+        // F4
+        assert!(es_de_iurefficient("registra hora y media en Juárez por revisión de pruebas"));
+        assert!(es_de_iurefficient("crea una tarea para mañana: llamar al cliente Pérez"));
+        assert!(es_de_iurefficient("agéndame una reunión el jueves a las 10"));
+        assert!(es_de_iurefficient("márcalas como leídas"));
     }
 
     #[test]

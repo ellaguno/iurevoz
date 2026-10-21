@@ -10,11 +10,13 @@ mod control;
 mod correccion;
 mod detector;
 mod entrenamiento;
+mod escribir;
 mod escritorio;
 mod iure;
 mod llm_local;
 mod modelos;
 mod motor;
+mod normalizar;
 mod portal;
 mod procesos;
 mod puntuacion;
@@ -50,6 +52,8 @@ Uso:
   iurevoz decir \"texto\" [--voz CLAVE] [--guardar A.wav]
                                 habla con la voz local (claves: piper-ald, piper-claude,
                                 piper-daniela, kokoro-dora, kokoro-alex, supertonic)
+  iurevoz normalizar [\"texto\"]  muestra el texto como lo leerá la voz (sin texto: una línea por
+                                línea de la entrada estándar)
   iurevoz --sin-portal          abre la ventana sin teclear ni atajo global
 ";
 
@@ -99,7 +103,16 @@ fn main() -> Result<()> {
                     let _ = c.guardar();
                 }
             });
-            let ag = agente::Agente::new(cfg.comandos.llm.clone(), Some(portal), voz.clone());
+            // desde la terminal no hay a quién preguntar: se muestra lo que se pediría y se niega
+            let ganchos = agente::Ganchos {
+                confirmar: Box::new(|d: &str| {
+                    println!("  ? pediría permiso: {d} → no (en la terminal no se confirma)");
+                    false
+                }),
+                pausar_escucha: Box::new(|_| {}),
+            };
+            let ag = agente::Agente::new(cfg.comandos.llm.clone(), Some(portal), voz.clone())
+                .con_ganchos(std::sync::Arc::new(ganchos));
             let t = Instant::now();
             ag.precalentar()?;
             if cfg.comandos.llm.servicio == config::Servicio::Local {
@@ -131,6 +144,14 @@ fn main() -> Result<()> {
             // «¿qué tengo hoy?» desde la terminal (o un atajo que lo pase a `notify-send`)
             println!("{}", resumen::mi_dia()?);
         }
+        Some("normalizar") => match args.get(1) {
+            Some(t) => println!("{}", voz::para_hablar(t)),
+            None => {
+                for l in std::io::stdin().lines() {
+                    println!("{}", voz::para_hablar(&l?));
+                }
+            }
+        },
         Some("decir") => {
             let texto = args.get(1).context("falta el texto")?;
             let opt = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
@@ -144,7 +165,7 @@ fn main() -> Result<()> {
             let s = voz::Sintetizador::cargar(&clave, 1.0)?;
             let carga = t.elapsed().as_secs_f32();
             let t = Instant::now();
-            let (m, sr) = s.generar(texto)?;
+            let (m, sr) = s.generar(&voz::para_hablar(texto))?;
             let tgen = t.elapsed().as_secs_f32();
             let dur = m.len() as f32 / sr as f32;
             eprintln!("{clave}: carga {carga:.1} s · {dur:.1} s de audio en {tgen:.2} s (RTF {:.2})", tgen / dur);
