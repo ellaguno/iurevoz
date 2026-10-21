@@ -919,7 +919,11 @@ impl eframe::App for App {
             });
             if self.ajustes {
                 ui.separator();
-                self.panel_ajustes(ui);
+                // con muchas opciones el panel no cabe en ventanas chicas: se desplaza
+                let alto = ui.ctx().content_rect().height() * 0.65;
+                egui::ScrollArea::vertical().max_height(alto).auto_shrink([false, true]).show(ui, |ui| {
+                    self.panel_ajustes(ui);
+                });
             }
             if let Some(e) = &self.error {
                 ui.label(RichText::new(e).small().color(Color32::from_rgb(200, 80, 80)));
