@@ -3,6 +3,16 @@
 Versiones de IureVoz. El flujo `.github/workflows/release.yml` toma las notas de la
 sección `## vX.Y.Z` al subir la etiqueta.
 
+## Sin publicar
+
+### Cambiado
+- **Enrutamiento con el modelo.** Antes de actuar, una consulta corta con el catálogo
+  de lo que IureVoz sabe hacer decide a quién le toca: Iurefficient, las apps de
+  escritorio, Claude (sistema), el escritorio o la charla. Las palabras clave quedan de
+  respaldo. «Transcribe la siguiente junta» ya va a IureTranscribe (graba y transcribe
+  al detener) y no a la agenda de Iurefficient.
+- «¿Qué puedes hacer?» responde con el catálogo.
+
 ## v0.2.1 — 2026-10-22
 
 ### Cambiado

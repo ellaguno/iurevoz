@@ -29,6 +29,10 @@ Si la instrucción suena a abrir algo (aunque esté mal escrita, p. ej. «apre»
 Nunca digas que hiciste o harás algo sin haber llamado la herramienta correspondiente. \
 Para cualquier cuenta usa la herramienta calcular, nunca calcules de memoria. \
 Si te preguntan algo de conocimiento general, responde tú en una o dos frases; busca en la web solo si lo piden. \
+Si preguntan qué puedes hacer: dictar en cualquier ventana (con puntuación, viñetas y «borra la palabra»), \
+abrir apps y páginas, buscar en internet, leer encabezados de noticias; consultar Iurefficient (proyectos, tareas, \
+agenda, horas, CRM) y registrar horas, tareas o eventos; buscar y leer archivos de IureDav, OCR de PDF, grabar \
+y transcribir juntas con IureTranscribe, escribir en IureEditor; y pasarle a Claude tareas del sistema como scripts. \
 Cuando termines responde en español de México (tutea; nunca uses voseo), en una o dos frases cortas, porque tu respuesta se lee en voz alta. \
 No uses markdown ni listas. La persona está en México: moneda en pesos, IVA del 16 %. \
 Si una cuenta es ambigua, haz la interpretación más común y dila en la respuesta. Si la instrucción completa o responde a algo de los mensajes anteriores \
@@ -42,7 +46,9 @@ Hoy es {} (para la hora exacta usa hora_fecha).",
 fn sistema_suite() -> String {
     "Eres el ayudante de IureVoz para las apps de escritorio de la suite Iurefficient: IureDav (unidad de \
 archivos de los expedientes), IureOCR (PDF), IureTranscribe (grabar y transcribir reuniones) e IureEditor \
-(documentos). Resuelve el pedido con las herramientas; para encontrar un archivo usa primero archivos \
+(documentos). «Transcribe la junta (o reunión, audiencia, llamada)» que va a empezar o está por empezar \
+es grabarla con grabar_reunion: IureTranscribe la transcribe al detenerla. Si piden transcribir una grabación \
+que ya existe, usa grabaciones_recientes y transcribir. Resuelve el pedido con las herramientas; para encontrar un archivo usa primero archivos \
 (listar o buscar) y luego usa la ruta exacta que devuelva. Si te piden el contenido o un resumen, lee el \
 archivo y resume tú en dos o tres frases. Al crear un documento no preguntes el título: si no lo dieron, se pone uno con la fecha. Nunca inventes rutas ni resultados. Responde en español de México (tutea; nunca voseo), breve, \
 sin markdown, porque se lee en voz alta."
@@ -349,6 +355,36 @@ fn primera_mayuscula(t: &str) -> String {
     c.next().map(|p| p.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
+/// A quién le toca una instrucción (lo decide `Agente::enrutar`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Destino {
+    /// La instancia web: proyectos, tareas, agenda, horas, CRM… (sub-agente de Iurefficient).
+    Iurefficient,
+    /// Apps de escritorio de la suite: IureDav, IureOCR, IureTranscribe, IureEditor.
+    Apps,
+    /// Trabajo en el sistema operativo: a Claude Code.
+    Sistema,
+    /// Herramientas básicas del escritorio (abrir, web, volumen, teclas…).
+    Escritorio,
+    /// Pregunta general o seguimiento de la charla.
+    Conversacion,
+}
+
+const SISTEMA_ENRUTADOR: &str = "Clasificas instrucciones de voz para IureVoz, un asistente de escritorio en Linux. \
+Responde SOLO una palabra de esta lista:\n\
+iurefficient: la instancia web de Iurefficient de la persona: proyectos o expedientes, sus tareas y vencimientos, \
+su agenda y calendario (reuniones, juntas, audiencias y citas agendadas), sus horas registradas, notificaciones, clientes, \
+el CRM (oportunidades, prospectos), documentos guardados en la instancia; también registrar horas o crear tareas o eventos.\n\
+apps: las apps de escritorio de la suite en este equipo: archivos de la unidad IureDav (buscar, abrir, leer, resumir), \
+PDF (OCR, leer, girar o quitar páginas), GRABAR o TRANSCRIBIR una reunión, junta, audiencia o llamada con IureTranscribe \
+(«transcribe la junta», «graba la reunión», «detén la grabación»), abrir o crear documentos en IureEditor.\n\
+sistema: trabajo en el sistema operativo con comandos: crear o editar scripts o programas, instalar o configurar, \
+mover, copiar, renombrar, comprimir o borrar archivos, procesos, espacio en disco.\n\
+escritorio: abrir una aplicación o una página web, buscar en internet, noticias o encabezados de un sitio, volumen, \
+pulsar teclas, escribir un texto, cuentas, la hora, leer en voz alta lo seleccionado.\n\
+conversacion: preguntas de conocimiento general, charla, o «qué puedes hacer».\n\
+Si la instrucción contesta o continúa la conversación previa, clasifícala por el tema de esa conversación.";
+
 pub struct Agente {
     /// Instrucción en curso (para los candados de herramientas con efectos fuera).
     instruccion: std::sync::Mutex<String>,
@@ -407,6 +443,44 @@ impl Agente {
     pub fn con_claude(mut self, delegar: Delegar) -> Self {
         self.delegar = Some(delegar);
         self
+    }
+
+    /// ¿A qué parte de IureVoz le toca la instrucción? Una consulta corta al modelo con el
+    /// catálogo de lo que se sabe hacer: las palabras clave solas se confunden («transcribe la
+    /// junta» tiene «junta», que también es de la agenda de Iurefficient).
+    fn enrutar(&self, instruccion: &str, historial: &[Value]) -> Result<Destino> {
+        let previo: Vec<String> = historial
+            .iter()
+            .rev()
+            .take(2)
+            .rev()
+            .filter_map(|m| Some(format!("{}: {}", m["role"].as_str()?, m["content"].as_str()?.chars().take(300).collect::<String>())))
+            .collect();
+        let usuario = if previo.is_empty() {
+            format!("Instrucción: {instruccion}")
+        } else {
+            format!("Conversación previa:\n{}\n\nInstrucción: {instruccion}", previo.join("\n"))
+        };
+        let mensajes = [json!({"role": "system", "content": SISTEMA_ENRUTADOR}), json!({"role": "user", "content": usuario})];
+        let (msg, _) = self.pedir(&mensajes, None)?;
+        let t = msg["content"].as_str().unwrap_or("").to_lowercase();
+        // la primera etiqueta que aparezca en la respuesta
+        let mut mejor: Option<(usize, Destino)> = None;
+        for (etiqueta, d) in [
+            ("iurefficient", Destino::Iurefficient),
+            ("apps", Destino::Apps),
+            ("sistema", Destino::Sistema),
+            ("escritorio", Destino::Escritorio),
+            ("conversacion", Destino::Conversacion),
+            ("conversación", Destino::Conversacion),
+        ] {
+            if let Some(i) = t.find(etiqueta) {
+                if mejor.is_none_or(|(j, _)| i < j) {
+                    mejor = Some((i, d));
+                }
+            }
+        }
+        mejor.map(|(_, d)| d).with_context(|| format!("el enrutador respondió «{}»", t.trim()))
     }
 
     /// Con el LLM local: arranca el servidor y deja en caché el prefijo (instrucciones y
@@ -485,12 +559,32 @@ impl Agente {
         }
         let directo = if self.modo != Modo::Principal {
             None
-        } else if es_de_iurefficient(instruccion) {
-            Some("consultar_iurefficient")
-        } else if es_de_la_suite(instruccion) {
-            Some("expedientes_y_apps")
         } else {
-            None
+            match self.enrutar(instruccion, historial) {
+                Ok(d) => {
+                    paso(&format!("enrutado: {d:?}"));
+                    match d {
+                        Destino::Iurefficient => Some("consultar_iurefficient"),
+                        Destino::Apps => Some("expedientes_y_apps"),
+                        Destino::Sistema if self.delegar.is_some() => {
+                            let r = self.delegar.as_ref().unwrap()(instruccion)?;
+                            return Ok(Informe { acciones: vec![format!("pedir_a_claude → {r}")], respuesta: primera_mayuscula(&r) + "." });
+                        }
+                        _ => None,
+                    }
+                }
+                // sin respuesta del modelo: palabras clave
+                Err(e) => {
+                    paso(&format!("enrutador: {e:#}; se usan palabras clave"));
+                    if es_de_iurefficient(instruccion) {
+                        Some("consultar_iurefficient")
+                    } else if es_de_la_suite(instruccion) {
+                        Some("expedientes_y_apps")
+                    } else {
+                        None
+                    }
+                }
+            }
         };
         if let Some(h) = directo {
             let editor_ya_abierto = es_dictar(instruccion) && esc::corre("iureditor");
@@ -701,6 +795,11 @@ impl Agente {
 
     /// Devuelve el mensaje del asistente y sus llamadas: (id, nombre, argumentos).
     fn llamar(&self, mensajes: &[Value]) -> Result<(Value, Vec<(String, String, Value)>)> {
+        self.pedir(mensajes, Some(self.definiciones()))
+    }
+
+    /// Una vuelta con el modelo; sin herramientas, solo texto (p. ej. para enrutar).
+    fn pedir(&self, mensajes: &[Value], herramientas: Option<Value>) -> Result<(Value, Vec<(String, String, Value)>)> {
         let local;
         let base = if self.cfg.servicio == Servicio::Local {
             local = crate::llm_local::url(&self.cfg.modelo)?;
@@ -712,11 +811,14 @@ impl Agente {
             Servicio::Ollama => (
                 format!("{base}/api/chat"),
                 json!({"model": self.cfg.modelo, "stream": false, "think": false, "keep_alive": "30m",
-                    "options": {"temperature": 0, "num_ctx": 4096}, "messages": mensajes, "tools": self.definiciones()}),
+                    "options": {"temperature": 0, "num_ctx": 4096}, "messages": mensajes, "tools": herramientas.clone().unwrap_or(json!([]))}),
                 None,
             ),
             Servicio::OpenRouter | Servicio::OpenAi | Servicio::Local => {
-                let mut c = json!({"model": self.cfg.modelo, "temperature": 0, "messages": mensajes, "tools": self.definiciones()});
+                let mut c = json!({"model": self.cfg.modelo, "temperature": 0, "messages": mensajes});
+                if let Some(h) = &herramientas {
+                    c["tools"] = h.clone();
+                }
                 if self.cfg.servicio == Servicio::OpenRouter {
                     c["reasoning"] = json!({"enabled": false});
                 } else {
@@ -898,6 +1000,29 @@ mod pruebas {
         assert!(!es_de_la_suite("Abre la página del New York Times y leme los encabezados"));
         assert!(pide_web("Abre la página del New York Times y leme los encabezados"));
         assert_eq!(app_a_abrir("abre el navegador").as_deref(), Some("el navegador"));
+    }
+
+    /// Con el LLM configurado (solo clasifica, no ejecuta nada): `cargo test -- --ignored enrutador_real`.
+    #[test]
+    #[ignore]
+    fn enrutador_real() {
+        let cfg = crate::config::Config::cargar();
+        let ag = Agente::new(cfg.comandos.llm.clone(), None, None);
+        for (frase, esperado) in [
+            ("transcribe la siguiente junta", Destino::Apps),
+            ("graba la audiencia con Pérez", Destino::Apps),
+            ("¿qué juntas tengo mañana?", Destino::Iurefficient),
+            ("¿cuáles son las oportunidades abiertas?", Destino::Iurefficient),
+            ("busca el contrato de Heralva en la unidad", Destino::Apps),
+            ("crea un script que respalde mis documentos", Destino::Sistema),
+            ("abre el New York Times", Destino::Escritorio),
+            ("¿quién fue Benito Juárez?", Destino::Conversacion),
+            ("registra dos horas en Heralva", Destino::Iurefficient),
+        ] {
+            let d = ag.enrutar(frase, &[]).expect("enrutar");
+            println!("{frase} → {d:?}");
+            assert_eq!(d, esperado, "{frase}");
+        }
     }
 
     #[test]
