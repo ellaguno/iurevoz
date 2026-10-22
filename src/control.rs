@@ -502,6 +502,8 @@ pub fn escuchar_socket(ctl: Controlador) {
                 }
                 match orden.trim() {
                     "alternar" => ctl.enviar(Control::Alternar),
+                    // abrir IureVoz desde el menú con la app ya corriendo: mostrar la ventana
+                    "mostrar" => crate::ui::mostrar_ventana(),
                     "comando" => ctl.enviar(Control::Comando),
                     "leer" | "callar" => ctl.enviar(Control::Leer),
                     // solo se puede negar desde fuera: aprobar exige al usuario (voz o botón)

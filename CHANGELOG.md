@@ -3,6 +3,14 @@
 Versiones de IureVoz. El flujo `.github/workflows/release.yml` toma las notas de la
 sección `## vX.Y.Z` al subir la etiqueta.
 
+## Sin publicar
+
+### Cambiado
+- **La ventana solo se ve cuando se pide**, como en IureDav: cerrarla la quita y
+  IureVoz sigue con su ícono; «Mostrar IureVoz» o abrirlo otra vez desde el menú la
+  vuelve a crear con todo lo dictado. Al iniciar la sesión arranca solo con el ícono.
+- Ajustes se desplaza con scroll cuando no cabe en la ventana.
+
 ## v0.2.0 — 2026-10-21
 
 ### Añadido

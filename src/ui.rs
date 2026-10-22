@@ -63,8 +63,6 @@ pub struct App {
     renovar_iure: bool,
     /// Formulario para entrar a Iurefficient: (contraseña, código, pide código, visible).
     entrada_iure: (String, String, bool, bool),
-    /// Minimizar en el primer cuadro (arranque con la sesión).
-    minimizar: bool,
     /// Hay entrada en ~/.config/autostart.
     con_la_sesion: bool,
     /// F6b: ¿IureVoz está registrado como servidor MCP en Claude Code? y registro en curso.
@@ -98,7 +96,6 @@ impl App {
             esperando_comando: false,
             atajos_gnome: crate::atajos_gnome::instalados(),
             renovar_iure: false,
-            minimizar: false,
             con_la_sesion: crate::bandeja::arranque::activo(),
             mcp_claude: (crate::mcp_voz::registrado_en_claude_code(), None),
             entrada_iure: Default::default(),
@@ -417,7 +414,7 @@ impl App {
             }
             ui.label("Inicio");
             if ui
-                .checkbox(&mut self.con_la_sesion, "abrir IureVoz al iniciar la sesión (minimizado, con su ícono arriba)")
+                .checkbox(&mut self.con_la_sesion, "abrir IureVoz al iniciar la sesión (solo el ícono arriba, sin ventana)")
                 .changed()
             {
                 if let Err(e) = crate::bandeja::arranque::fijar(self.con_la_sesion) {
@@ -878,18 +875,6 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if std::mem::take(&mut self.minimizar) {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-        }
-        // con el ícono en la barra, cerrar la ventana la minimiza: IureVoz sigue escuchando.
-        // «Salir» del menú del ícono es lo que la termina.
-        if ui.ctx().input(|i| i.viewport().close_requested())
-            && crate::bandeja::ACTIVA.load(Ordering::Relaxed)
-            && !crate::bandeja::SALIENDO.load(Ordering::Relaxed)
-        {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-        }
         self.procesar_eventos();
         if ui.input(|i| i.key_pressed(egui::Key::F9)) {
             self.alternar();
@@ -944,85 +929,157 @@ impl eframe::App for App {
 }
 
 /// Construye todo y abre la ventana.
-pub fn ejecutar(cfg: Config, sin_portal: bool, minimizada: bool) -> eframe::Result {
-    let opciones = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("IureVoz")
-            .with_app_id(crate::config::APP_ID)
-            .with_inner_size([560.0, 640.0])
-            .with_min_inner_size([380.0, 320.0]),
-        ..Default::default()
+/// Contexto de la ventana abierta (ninguno mientras está cerrada y solo queda el ícono).
+static VENTANA: std::sync::Mutex<Option<egui::Context>> = std::sync::Mutex::new(None);
+/// Avisos al hilo principal mientras no hay ventana: abrirla (o salir, si `bandeja::SALIENDO`).
+static ABRIR: std::sync::OnceLock<(crossbeam_channel::Sender<()>, crossbeam_channel::Receiver<()>)> = std::sync::OnceLock::new();
+
+fn canal_abrir() -> &'static (crossbeam_channel::Sender<()>, crossbeam_channel::Receiver<()>) {
+    ABRIR.get_or_init(crossbeam_channel::unbounded)
+}
+
+/// «Mostrar IureVoz» (ícono o un segundo arranque): abre la ventana, o la trae al frente si ya
+/// está (en Wayland GNOME puede responder con el aviso «IureVoz está listo»).
+pub fn mostrar_ventana() {
+    if let Some(ctx) = VENTANA.lock().unwrap().as_ref() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
+    } else {
+        let _ = canal_abrir().0.send(());
+    }
+}
+
+/// «Salir» del ícono: cierra la ventana (si la hay) y termina.
+pub fn salir() {
+    crate::bandeja::SALIENDO.store(true, Ordering::Relaxed);
+    if let Some(ctx) = VENTANA.lock().unwrap().as_ref() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        ctx.request_repaint();
+    }
+    let _ = canal_abrir().0.send(());
+}
+
+/// La ventana se crea y se destruye; el estado (frases, ajustes, tareas) vive en `App`.
+struct Ventana(std::rc::Rc<std::cell::RefCell<App>>);
+
+impl eframe::App for Ventana {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        eframe::App::ui(&mut *self.0.borrow_mut(), ui, frame);
+    }
+}
+
+/// Arranca motor, control, voz e ícono y abre la ventana. En Wayland una ventana no se puede
+/// esconder: con el ícono en la barra, cerrarla la destruye y «Mostrar IureVoz» crea otra,
+/// como IureDav. `oculta` (arranque con la sesión) empieza solo con el ícono.
+pub fn ejecutar(cfg: Config, sin_portal: bool, oculta: bool) -> eframe::Result {
+    let repintar: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
+        if let Some(ctx) = VENTANA.lock().unwrap().as_ref() {
+            ctx.request_repaint();
+        }
+    });
+    let (tx_ui, rx_ui) = crossbeam_channel::unbounded::<ParaUi>();
+    let (tx_aviso, rx_aviso) = crossbeam_channel::unbounded::<Aviso>();
+    let portal = (!sin_portal).then(|| {
+        // con los atajos de GNOME instalados no hace falta el portal (que en GNOME 50 no responde)
+        let atajo_portal = !crate::atajos_gnome::instalados();
+        Portal::iniciar(cfg.token_portal.clone(), atajo_portal, move |a| drop(tx_aviso.send(a)))
+    });
+    let voz = {
+        let tx = tx_ui.clone();
+        let r = repintar.clone();
+        Some(Voz::iniciar(cfg.voz.voz.clone(), cfg.voz.velocidad, move |m| {
+            let _ = tx.send(ParaUi::Error(m));
+            r();
+        }))
     };
-    eframe::run_native(
-        "IureVoz",
-        opciones,
-        Box::new(move |cc| {
-            let ctx = cc.egui_ctx.clone();
-            let repintar: Arc<dyn Fn() + Send + Sync> = Arc::new(move || ctx.request_repaint());
-            let (tx_ui, rx_ui) = crossbeam_channel::unbounded::<ParaUi>();
-            let (tx_aviso, rx_aviso) = crossbeam_channel::unbounded::<Aviso>();
-            let portal = (!sin_portal).then(|| {
-                // con los atajos de GNOME instalados no hace falta el portal (que en GNOME 50 no responde)
-                let atajo_portal = !crate::atajos_gnome::instalados();
-                Portal::iniciar(cfg.token_portal.clone(), atajo_portal, move |a| drop(tx_aviso.send(a)))
-            });
-            let voz = {
-                let tx = tx_ui.clone();
-                let r = repintar.clone();
-                Some(Voz::iniciar(cfg.voz.voz.clone(), cfg.voz.velocidad, move |m| {
-                    let _ = tx.send(ParaUi::Error(m));
-                    r();
-                }))
+    let estado = crate::control::Estado::new();
+    let ctl_estado = estado.clone();
+    let (tx_ctl, rx_ctl) = crossbeam_channel::unbounded::<Control>();
+    let motor = Motor::iniciar(cfg.clone(), portal.clone(), voz.clone(), estado.clone(), tx_ctl.clone(), repintar.clone());
+    let ctl = Controlador::iniciar(tx_ctl, rx_ctl, estado, motor.tx.clone(), voz.clone(), tx_ui.clone(), repintar.clone());
+    {
+        let ctl = ctl.clone();
+        let r = repintar.clone();
+        std::thread::spawn(move || {
+            for a in rx_aviso {
+                ctl.aviso_portal(a, &tx_ui);
+                r();
+            }
+        });
+    }
+    crate::control::escuchar_socket(ctl.clone());
+    if cfg.escucha.siempre {
+        ctl.enviar(Control::Vigilia(true));
+    }
+    // F5: resumen del día al abrir y avisos de Iurefficient
+    {
+        let e = ctl_estado.clone();
+        crate::resumen::arrancar(voz.clone(), move || {
+            use std::sync::atomic::Ordering::Relaxed;
+            // no hablar encima de un dictado o de una instrucción
+            e.grabando.load(Relaxed) || e.atento.load(Relaxed) || e.pendiente.lock().unwrap().is_some()
+        });
+    }
+    // índice de nombres de la unidad de IureDav (recorrerla es lento)
+    crate::suite::indexar_en_fondo();
+    // LLM local: se arranca y precalienta en segundo plano para que la primera instrucción sea rápida
+    if cfg.comandos.activos && cfg.comandos.llm.servicio == Servicio::Local {
+        let c = cfg.clone();
+        std::thread::spawn(move || {
+            let mut ag = crate::agente::Agente::new(c.comandos.llm.clone(), None, None);
+            if c.comandos.claude {
+                // mismas herramientas que en uso real, para que el prefijo en caché coincida
+                ag = ag.con_claude(Box::new(|_| Ok(String::new())));
+            }
+            if let Err(e) = ag.precalentar() {
+                eprintln!("precalentar LLM local: {e:#}");
+            }
+        });
+    }
+    // ícono en la barra superior, con el estado (dictando, instrucción, «oye compu»)
+    crate::bandeja::iniciar(ctl.clone());
+    let app = std::rc::Rc::new(std::cell::RefCell::new(App::new(cfg, motor, ctl, rx_ui, portal, voz)));
+    let inicio = std::time::Instant::now();
+    let mut abrir = !oculta;
+    loop {
+        if abrir {
+            let a = app.clone();
+            let opciones = eframe::NativeOptions {
+                viewport: egui::ViewportBuilder::default()
+                    .with_title("IureVoz")
+                    .with_app_id(crate::config::APP_ID)
+                    .with_inner_size([560.0, 640.0])
+                    .with_min_inner_size([380.0, 320.0]),
+                run_and_return: true,
+                ..Default::default()
             };
-            let estado = crate::control::Estado::new();
-            let ctl_estado = estado.clone();
-            let (tx_ctl, rx_ctl) = crossbeam_channel::unbounded::<Control>();
-            let motor = Motor::iniciar(cfg.clone(), portal.clone(), voz.clone(), estado.clone(), tx_ctl.clone(), repintar.clone());
-            let ctl = Controlador::iniciar(tx_ctl, rx_ctl, estado, motor.tx.clone(), voz.clone(), tx_ui.clone(), repintar.clone());
-            {
-                let ctl = ctl.clone();
-                let r = repintar.clone();
-                std::thread::spawn(move || {
-                    for a in rx_aviso {
-                        ctl.aviso_portal(a, &tx_ui);
-                        r();
-                    }
-                });
+            eframe::run_native(
+                "IureVoz",
+                opciones,
+                Box::new(move |cc| {
+                    *VENTANA.lock().unwrap() = Some(cc.egui_ctx.clone());
+                    Ok(Box::new(Ventana(a)))
+                }),
+            )?;
+            *VENTANA.lock().unwrap() = None;
+            abrir = false;
+        }
+        // sin ícono no habría cómo volver a abrirla: cerrar la ventana es salir
+        if crate::bandeja::SALIENDO.load(Ordering::Relaxed) || (!oculta && !crate::bandeja::ACTIVA.load(Ordering::Relaxed)) {
+            return Ok(());
+        }
+        // sin ventana: los eventos del motor se siguen atendiendo hasta que pidan abrirla
+        match canal_abrir().1.recv_timeout(std::time::Duration::from_millis(400)) {
+            Ok(()) => abrir = !crate::bandeja::SALIENDO.load(Ordering::Relaxed),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                app.borrow_mut().procesar_eventos();
+                // arranque oculto sin extensión de indicadores: no hay ícono, se abre
+                if oculta && !crate::bandeja::ACTIVA.load(Ordering::Relaxed) && inicio.elapsed() > std::time::Duration::from_secs(5) {
+                    abrir = true;
+                }
             }
-            crate::control::escuchar_socket(ctl.clone());
-            if cfg.escucha.siempre {
-                ctl.enviar(Control::Vigilia(true));
-            }
-            // F5: resumen del día al abrir y avisos de Iurefficient
-            {
-                let e = ctl_estado.clone();
-                crate::resumen::arrancar(voz.clone(), move || {
-                    use std::sync::atomic::Ordering::Relaxed;
-                    // no hablar encima de un dictado o de una instrucción
-                    e.grabando.load(Relaxed) || e.atento.load(Relaxed) || e.pendiente.lock().unwrap().is_some()
-                });
-            }
-            // índice de nombres de la unidad de IureDav (recorrerla es lento)
-            crate::suite::indexar_en_fondo();
-            // LLM local: se arranca y precalienta en segundo plano para que la primera instrucción sea rápida
-            if cfg.comandos.activos && cfg.comandos.llm.servicio == Servicio::Local {
-                let c = cfg.clone();
-                std::thread::spawn(move || {
-                    let mut ag = crate::agente::Agente::new(c.comandos.llm.clone(), None, None);
-                    if c.comandos.claude {
-                        // mismas herramientas que en uso real, para que el prefijo en caché coincida
-                        ag = ag.con_claude(Box::new(|_| Ok(String::new())));
-                    }
-                    if let Err(e) = ag.precalentar() {
-                        eprintln!("precalentar LLM local: {e:#}");
-                    }
-                });
-            }
-            // ícono en la barra superior, con el estado (dictando, instrucción, «oye compu»)
-            crate::bandeja::iniciar(ctl.clone(), cc.egui_ctx.clone());
-            let mut app = App::new(cfg, motor, ctl, rx_ui, portal, voz);
-            app.minimizar = minimizada;
-            Ok(Box::new(app))
-        }),
-    )
+            Err(_) => return Ok(()),
+        }
+    }
 }

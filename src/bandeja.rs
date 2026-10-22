@@ -2,18 +2,17 @@
 //! AppIndicator de Ubuntu). El color dice qué hace IureVoz: gris inactivo, verde con la
 //! oreja abierta a «oye compu», rojo dictando y azul escuchando una instrucción.
 //!
-//! En Wayland una app no puede esconder ni volver a mostrar su ventana por su cuenta: al
-//! cerrarla se minimiza (sigue aquí) y «Salir» del menú es lo que la termina.
+//! Con el ícono, cerrar la ventana la destruye y IureVoz sigue aquí; «Mostrar IureVoz» crea
+//! otra (en Wayland una ventana no se puede esconder y volver a mostrar). «Salir» termina.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use eframe::egui;
 use ksni::TrayMethods;
 
 use crate::control::{Control, Controlador};
 
-/// El ícono está en la barra: cerrar la ventana la minimiza en vez de salir.
+/// El ícono está en la barra: cerrar la ventana no termina IureVoz.
 pub static ACTIVA: AtomicBool = AtomicBool::new(false);
 /// Se pidió salir desde el menú: el cierre ya no se intercepta.
 pub static SALIENDO: AtomicBool = AtomicBool::new(false);
@@ -99,16 +98,6 @@ pub fn icono(modo: Modo, lado: i32) -> ksni::Icon {
 struct Bandeja {
     modo: Modo,
     ctl: Controlador,
-    ctx: egui::Context,
-}
-
-impl Bandeja {
-    fn mostrar(&self) {
-        // en Wayland GNOME puede responder con un aviso «IureVoz está listo» en vez de traerla
-        self.ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-        self.ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        self.ctx.request_repaint();
-    }
 }
 
 impl ksni::Tray for Bandeja {
@@ -129,7 +118,7 @@ impl ksni::Tray for Bandeja {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        self.mostrar();
+        crate::ui::mostrar_ventana();
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
@@ -146,7 +135,7 @@ impl ksni::Tray for Bandeja {
             ksni::MenuItem::Separator,
             StandardItem {
                 label: "Mostrar IureVoz".into(),
-                activate: Box::new(|t: &mut Self| t.mostrar()),
+                activate: Box::new(|_: &mut Self| crate::ui::mostrar_ventana()),
                 ..Default::default()
             }
             .into(),
@@ -167,7 +156,7 @@ impl ksni::Tray for Bandeja {
             StandardItem {
                 label: "Salir".into(),
                 icon_name: "application-exit".into(),
-                activate: Box::new(|t: &mut Self| salir(&t.ctx)),
+                activate: Box::new(|_: &mut Self| salir()),
                 ..Default::default()
             }
             .into(),
@@ -175,14 +164,12 @@ impl ksni::Tray for Bandeja {
     }
 }
 
-/// Cierra la ventana; si está minimizada en Wayland puede no procesar la orden, así que
-/// después de un momento se termina el proceso (los auxiliares mueren con él).
-fn salir(ctx: &egui::Context) {
-    SALIENDO.store(true, Ordering::Relaxed);
-    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-    ctx.request_repaint();
+/// Cierra la ventana y termina; si la ventana no procesa la orden, después de un momento
+/// se termina el proceso (los auxiliares mueren con él).
+fn salir() {
+    crate::ui::salir();
     std::thread::spawn(|| {
-        std::thread::sleep(Duration::from_millis(1500));
+        std::thread::sleep(Duration::from_millis(2000));
         crate::llm_local::apagar();
         crate::suite::apagar();
         std::process::exit(0);
@@ -191,7 +178,7 @@ fn salir(ctx: &egui::Context) {
 
 /// Pone el ícono y lo mantiene al día con el estado. Sin extensión de indicadores no hay
 /// ícono y la ventana se comporta como siempre.
-pub fn iniciar(ctl: Controlador, ctx: egui::Context) {
+pub fn iniciar(ctl: Controlador) {
     std::thread::Builder::new()
         .name("bandeja".into())
         .spawn(move || {
@@ -201,7 +188,7 @@ pub fn iniciar(ctl: Controlador, ctx: egui::Context) {
             };
             rt.block_on(async move {
                 let modo = Modo::de(&ctl);
-                let h = match (Bandeja { modo, ctl: ctl.clone(), ctx }).spawn().await {
+                let h = match (Bandeja { modo, ctl: ctl.clone() }).spawn().await {
                     Ok(h) => h,
                     Err(e) => return eprintln!("bandeja: sin ícono ({e})"),
                 };
@@ -234,7 +221,7 @@ pub mod arranque {
         ruta().is_some_and(|r| r.exists())
     }
 
-    /// Crea o quita la entrada. Arranca minimizado (`--autoarranque`).
+    /// Crea o quita la entrada. Arranca sin ventana, solo con el ícono (`--autoarranque`).
     pub fn fijar(si: bool) -> anyhow::Result<()> {
         let r = ruta().ok_or_else(|| anyhow::anyhow!("no encuentro ~/.config"))?;
         if !si {

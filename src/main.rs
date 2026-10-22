@@ -205,12 +205,12 @@ fn main() -> Result<()> {
         Some(otro) if !otro.starts_with("--") => bail!("subcomando desconocido: {otro} (ver iurevoz --help)"),
         _ => {
             let autoarranque = args.iter().any(|a| a == "--autoarranque");
-            // ya hay una ventana abierta: el segundo arranque funciona como atajo (salvo el de
-            // la sesión, que no debe ponerse a dictar)
+            // ya hay una abierta: el segundo arranque (desde el menú) muestra su ventana; el de la
+            // sesión no hace nada
             if autoarranque && control::instancia_abierta() {
                 return Ok(());
             }
-            if !autoarranque && control::enviar_a_instancia("alternar") {
+            if !autoarranque && control::enviar_a_instancia("mostrar") {
                 return Ok(());
             }
             instalar_lanzador();
