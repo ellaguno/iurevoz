@@ -3,7 +3,7 @@
 Versiones de IureVoz. El flujo `.github/workflows/release.yml` toma las notas de la
 sección `## vX.Y.Z` al subir la etiqueta.
 
-## Sin publicar
+## v0.2.1 — 2026-10-22
 
 ### Cambiado
 - **La ventana solo se ve cuando se pide**, como en IureDav: cerrarla la quita y
