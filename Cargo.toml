@@ -1,6 +1,6 @@
 [package]
 name = "iurevoz"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "Dictado y órdenes por voz para Linux (GNOME), local; parte de la suite Iurefficient"
 license = "Proprietary"

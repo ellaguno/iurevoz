@@ -3,7 +3,14 @@
 Versiones de IureVoz. El flujo `.github/workflows/release.yml` toma las notas de la
 sección `## vX.Y.Z` al subir la etiqueta.
 
-## Sin publicar
+## v0.2.2 — 2026-10-23
+
+### Corregido
+- **Al iniciar la sesión ya no se abre la ventana ni falta el ícono.** Si la extensión
+  de indicadores llegaba después que IureVoz, el ícono no se ponía, la ventana se abría
+  sola y al cerrarla volvía a abrirse. Ahora el ícono aparece en cuanto la barra está
+  lista; solo si no aparece en 30 s se abre la ventana, una vez, y cerrarla sin ícono
+  sale de IureVoz.
 
 ### Cambiado
 - **Enrutamiento con el modelo.** Antes de actuar, una consulta corta con el catálogo

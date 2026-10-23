@@ -1042,6 +1042,7 @@ pub fn ejecutar(cfg: Config, sin_portal: bool, oculta: bool) -> eframe::Result {
     let app = std::rc::Rc::new(std::cell::RefCell::new(App::new(cfg, motor, ctl, rx_ui, portal, voz)));
     let inicio = std::time::Instant::now();
     let mut abrir = !oculta;
+    let mut abierta_alguna_vez = false;
     loop {
         if abrir {
             let a = app.clone();
@@ -1064,9 +1065,10 @@ pub fn ejecutar(cfg: Config, sin_portal: bool, oculta: bool) -> eframe::Result {
             )?;
             *VENTANA.lock().unwrap() = None;
             abrir = false;
+            abierta_alguna_vez = true;
         }
         // sin ícono no habría cómo volver a abrirla: cerrar la ventana es salir
-        if crate::bandeja::SALIENDO.load(Ordering::Relaxed) || (!oculta && !crate::bandeja::ACTIVA.load(Ordering::Relaxed)) {
+        if crate::bandeja::SALIENDO.load(Ordering::Relaxed) || (abierta_alguna_vez && !crate::bandeja::ACTIVA.load(Ordering::Relaxed)) {
             return Ok(());
         }
         // sin ventana: los eventos del motor se siguen atendiendo hasta que pidan abrirla
@@ -1074,8 +1076,9 @@ pub fn ejecutar(cfg: Config, sin_portal: bool, oculta: bool) -> eframe::Result {
             Ok(()) => abrir = !crate::bandeja::SALIENDO.load(Ordering::Relaxed),
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 app.borrow_mut().procesar_eventos();
-                // arranque oculto sin extensión de indicadores: no hay ícono, se abre
-                if oculta && !crate::bandeja::ACTIVA.load(Ordering::Relaxed) && inicio.elapsed() > std::time::Duration::from_secs(5) {
+                // arranque oculto y el ícono no aparece (sin extensión de indicadores, o tarda
+                // al iniciar sesión): se abre una vez para que IureVoz no quede invisible
+                if !abierta_alguna_vez && !crate::bandeja::ACTIVA.load(Ordering::Relaxed) && inicio.elapsed() > std::time::Duration::from_secs(30) {
                     abrir = true;
                 }
             }

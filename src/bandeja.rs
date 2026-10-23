@@ -117,6 +117,16 @@ impl ksni::Tray for Bandeja {
         ksni::ToolTip { title: "IureVoz".into(), description: self.modo.texto().into(), ..Default::default() }
     }
 
+    // al iniciar sesión la extensión de indicadores puede llegar después que IureVoz
+    fn watcher_online(&self) {
+        ACTIVA.store(true, Ordering::Relaxed);
+    }
+
+    fn watcher_offline(&self, _: ksni::OfflineReason) -> bool {
+        ACTIVA.store(false, Ordering::Relaxed);
+        true
+    }
+
     fn activate(&mut self, _x: i32, _y: i32) {
         crate::ui::mostrar_ventana();
     }
@@ -177,7 +187,8 @@ fn salir() {
 }
 
 /// Pone el ícono y lo mantiene al día con el estado. Sin extensión de indicadores no hay
-/// ícono y la ventana se comporta como siempre.
+/// ícono y la ventana se comporta como siempre; si la extensión llega tarde (al iniciar
+/// sesión), el ícono aparece entonces.
 pub fn iniciar(ctl: Controlador) {
     std::thread::Builder::new()
         .name("bandeja".into())
@@ -188,11 +199,15 @@ pub fn iniciar(ctl: Controlador) {
             };
             rt.block_on(async move {
                 let modo = Modo::de(&ctl);
-                let h = match (Bandeja { modo, ctl: ctl.clone() }).spawn().await {
-                    Ok(h) => h,
-                    Err(e) => return eprintln!("bandeja: sin ícono ({e})"),
-                };
+                // si la barra aún no está, `watcher_offline` lo apaga y `watcher_online` lo prende
                 ACTIVA.store(true, Ordering::Relaxed);
+                let h = match (Bandeja { modo, ctl: ctl.clone() }).assume_sni_available(true).spawn().await {
+                    Ok(h) => h,
+                    Err(e) => {
+                        ACTIVA.store(false, Ordering::Relaxed);
+                        return eprintln!("bandeja: sin ícono ({e})");
+                    }
+                };
                 let mut antes = (modo, ctl.estado.vigilia.load(Ordering::Relaxed));
                 loop {
                     tokio::time::sleep(Duration::from_millis(250)).await;
