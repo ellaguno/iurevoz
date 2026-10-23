@@ -94,7 +94,7 @@ impl App {
             portal,
             voz,
             esperando_comando: false,
-            atajos_gnome: crate::atajos_gnome::instalados(),
+            atajos_gnome: atajos_gnome_instalados(),
             renovar_iure: false,
             con_la_sesion: crate::bandeja::arranque::activo(),
             mcp_claude: (crate::mcp_voz::registrado_en_claude_code(), None),
@@ -376,7 +376,8 @@ impl App {
 
             ui.label("Escribir en la ventana activa");
             let mut teclear = self.cfg.inyeccion == Inyeccion::Teclear;
-            if ui.checkbox(&mut teclear, "teclear el texto (portal de GNOME)").changed() {
+            let como = if cfg!(windows) { "teclear el texto" } else { "teclear el texto (portal de GNOME)" };
+            if ui.checkbox(&mut teclear, como).changed() {
                 self.cfg.inyeccion = if teclear { Inyeccion::Teclear } else { Inyeccion::Ninguna };
                 cambio = true;
             }
@@ -414,7 +415,7 @@ impl App {
             }
             ui.label("Inicio");
             if ui
-                .checkbox(&mut self.con_la_sesion, "abrir IureVoz al iniciar la sesión (solo el ícono arriba, sin ventana)")
+                .checkbox(&mut self.con_la_sesion, if cfg!(windows) { "abrir IureVoz al iniciar la sesión (solo el ícono junto al reloj, sin ventana)" } else { "abrir IureVoz al iniciar la sesión (solo el ícono arriba, sin ventana)" })
                 .changed()
             {
                 if let Err(e) = crate::bandeja::arranque::fijar(self.con_la_sesion) {
@@ -427,11 +428,11 @@ impl App {
             ui.horizontal(|ui| {
                 cambio |= ui
                     .checkbox(&mut self.cfg.registro, "guardar un registro de diagnóstico")
-                    .on_hover_text("En ~/.local/state/iurevoz/iurevoz.log. Incluye lo que dictas y lo que oye el reconocedor; no sale de tu equipo. Vale desde el próximo arranque.")
+                    .on_hover_text(if cfg!(windows) { "En %LOCALAPPDATA%\\iurevoz\\iurevoz.log. Incluye lo que dictas y lo que oye el reconocedor; no sale de tu equipo. Vale desde el próximo arranque." } else { "En ~/.local/state/iurevoz/iurevoz.log. Incluye lo que dictas y lo que oye el reconocedor; no sale de tu equipo. Vale desde el próximo arranque." })
                     .changed();
                 if self.cfg.registro && ui.small_button("abrir carpeta").clicked() {
-                    let dir = dirs::state_dir().unwrap_or_else(crate::config::dir_datos).join("iurevoz");
-                    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+                    let dir = dirs::state_dir().or_else(dirs::data_local_dir).unwrap_or_else(crate::config::dir_datos).join("iurevoz");
+                    let _ = crate::plataforma::abrir(dir);
                 }
             });
             ui.end_row();
@@ -521,6 +522,7 @@ impl App {
         ui.separator();
         self.panel_suite(ui);
         ui.separator();
+        #[cfg(target_os = "linux")]
         ui.horizontal(|ui| {
             let t = if self.atajos_gnome { "Reinstalar atajos de GNOME" } else { "Instalar atajos de GNOME" };
             if ui.button(t).on_hover_text("Crea en Configuración → Teclado los atajos Ctrl+Alt+Espacio (dictar), Ctrl+Alt+C (instrucción) y Ctrl+Alt+L (leer)").clicked() {
@@ -688,7 +690,7 @@ impl App {
                     } else {
                         ui.label(format!("✖ {} no instalada", a.name));
                         if ui.small_button("Descargar").clicked() {
-                            let _ = std::process::Command::new("gio").args(["open", &a.download_url]).spawn();
+                            let _ = crate::plataforma::abrir(&a.download_url);
                         }
                     }
                 });
@@ -850,6 +852,7 @@ impl App {
             match &p.resultado {
                 Some((true, _)) => drop(ui.label(RichText::new("✔ el texto llegó completo").color(Color32::from_rgb(60, 160, 60)))),
                 Some((false, m)) => drop(ui.label(RichText::new(m).color(Color32::from_rgb(200, 80, 80)))),
+                None if p.inicio.is_some() && cfg!(windows) => drop(ui.label("escribiendo…")),
                 None if p.inicio.is_some() => drop(ui.label("escribiendo… (acepta el permiso de GNOME si aparece)")),
                 None => {}
             }
@@ -969,6 +972,14 @@ impl eframe::App for Ventana {
     }
 }
 
+/// ¿Ya están los atajos personalizados de GNOME? (En Windows los registra la app.)
+fn atajos_gnome_instalados() -> bool {
+    #[cfg(target_os = "linux")]
+    return crate::atajos_gnome::instalados();
+    #[cfg(windows)]
+    false
+}
+
 /// Arranca motor, control, voz e ícono y abre la ventana. En Wayland una ventana no se puede
 /// esconder: con el ícono en la barra, cerrarla la destruye y «Mostrar IureVoz» crea otra,
 /// como IureDav. `oculta` (arranque con la sesión) empieza solo con el ícono.
@@ -982,7 +993,7 @@ pub fn ejecutar(cfg: Config, sin_portal: bool, oculta: bool) -> eframe::Result {
     let (tx_aviso, rx_aviso) = crossbeam_channel::unbounded::<Aviso>();
     let portal = (!sin_portal).then(|| {
         // con los atajos de GNOME instalados no hace falta el portal (que en GNOME 50 no responde)
-        let atajo_portal = !crate::atajos_gnome::instalados();
+        let atajo_portal = !atajos_gnome_instalados();
         Portal::iniciar(cfg.token_portal.clone(), atajo_portal, move |a| drop(tx_aviso.send(a)))
     });
     let voz = {

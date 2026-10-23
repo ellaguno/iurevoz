@@ -7,9 +7,12 @@
 //! F1 · Preguntar: cliente del servidor MCP de la instancia (`/api/mcp`, solo lectura). Sus
 //! herramientas se descubren con `tools/list`, así que las nuevas aparecen solas.
 //!
-//! El llavero se lee y escribe con `secret-tool` (mismo Secret Service y mismos atributos
-//! que el crate `keyring` de iurefficient-connect): así no hace falta libdbus para compilar.
+//! En Linux el llavero se lee y escribe con `secret-tool` (mismo Secret Service y mismos
+//! atributos que el crate `keyring` de iurefficient-connect): así no hace falta libdbus para
+//! compilar. En Windows se usa `keyring` directamente (Administrador de credenciales), con
+//! el mismo servicio y usuario que las demás apps de la suite.
 
+#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -33,6 +36,17 @@ fn usuario(acc: &Account, tipo: &str) -> String {
     format!("{}:{}:{tipo}", acc.host(), acc.email)
 }
 
+#[cfg(windows)]
+fn leer_secreto(acc: &Account, tipo: &str) -> Option<String> {
+    keyring::Entry::new("iurefficient", &usuario(acc, tipo)).ok()?.get_password().ok().filter(|s| !s.is_empty())
+}
+
+#[cfg(windows)]
+fn guardar_secreto(acc: &Account, tipo: &str, valor: &str) -> Result<()> {
+    keyring::Entry::new("iurefficient", &usuario(acc, tipo))?.set_password(valor).context("no pude guardar en el llavero")
+}
+
+#[cfg(target_os = "linux")]
 fn leer_secreto(acc: &Account, tipo: &str) -> Option<String> {
     let out = Command::new("secret-tool")
         .args(["lookup", "service", "iurefficient", "username", &usuario(acc, tipo)])
@@ -43,6 +57,7 @@ fn leer_secreto(acc: &Account, tipo: &str) -> Option<String> {
     (out.status.success() && !s.is_empty()).then_some(s)
 }
 
+#[cfg(target_os = "linux")]
 fn guardar_secreto(acc: &Account, tipo: &str, valor: &str) -> Result<()> {
     use std::io::Write;
     let u = usuario(acc, tipo);
@@ -468,7 +483,7 @@ pub fn abrir(que: &str, id: Option<&str>, nombre: Option<&str>) -> Result<String
         }
     };
     let url = format!("{base}{ruta}");
-    Command::new("gio").args(["open", &url]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    crate::plataforma::abrir(&url)?;
     Ok(format!("abrí {desc} en el navegador"))
 }
 

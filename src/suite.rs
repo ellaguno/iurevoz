@@ -141,7 +141,7 @@ pub fn unidades() -> Vec<apps::DavMount> {
 pub fn resolver(ruta: &str) -> Result<PathBuf> {
     let ruta = ruta.trim().trim_matches(['"', '\'']);
     let home = dirs::home_dir().context("sin carpeta personal")?;
-    let candidata = if let Some(r) = ruta.strip_prefix("~/") {
+    let candidata = if let Some(r) = ruta.strip_prefix("~/").or_else(|| ruta.strip_prefix("~\\")) {
         home.join(r)
     } else if Path::new(ruta).is_absolute() {
         PathBuf::from(ruta)
@@ -149,8 +149,10 @@ pub fn resolver(ruta: &str) -> Result<PathBuf> {
         // relativa: primero en la unidad de IureDav, luego en la carpeta personal
         unidades().iter().map(|m| Path::new(&m.mount_point).join(ruta)).find(|p| p.exists()).unwrap_or_else(|| home.join(ruta))
     };
-    let real = candidata.canonicalize().with_context(|| format!("no existe «{ruta}»"))?;
-    let permitido = real.starts_with(&home) || unidades().iter().any(|m| real.starts_with(&m.mount_point));
+    let real = crate::plataforma::canonica(&candidata).with_context(|| format!("no existe «{ruta}»"))?;
+    let canon = |p: &Path| crate::plataforma::canonica(p).unwrap_or_else(|_| p.to_path_buf());
+    let permitido =
+        real.starts_with(canon(&home)) || unidades().iter().any(|m| real.starts_with(canon(Path::new(&m.mount_point))));
     if !permitido {
         bail!("solo puedo usar archivos de tu carpeta personal o de las unidades de IureDav");
     }
@@ -304,7 +306,7 @@ pub fn abrir(ruta: &str, con_editor: bool) -> Result<String> {
         apps::open_with(AppId::Editor, &p)?;
         return Ok(format!("abrí {} en IureEditor", p.file_name().unwrap_or_default().to_string_lossy()));
     }
-    Command::new("gio").arg("open").arg(&p).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    crate::plataforma::abrir(&p)?;
     Ok(format!("abrí {}", p.file_name().unwrap_or_default().to_string_lossy()))
 }
 
@@ -317,7 +319,14 @@ pub fn editor_inserta() -> bool {
     version_editor().is_some_and(|v| v > (1, 11, 2))
 }
 
-/// Versión del IureEditor instalado (del paquete), p. ej. (1, 12, 1).
+/// Versión del IureEditor instalado (del paquete), p. ej. (1, 12, 1). En Windows no hay
+/// paquete que consultar.
+#[cfg(windows)]
+fn version_editor() -> Option<(u32, u32, u32)> {
+    None
+}
+
+#[cfg(target_os = "linux")]
 fn version_editor() -> Option<(u32, u32, u32)> {
     let out = Command::new("dpkg-query").args(["-W", "-f=${Version}", "iureditor"]).output().ok()?;
     let v: Vec<u32> = String::from_utf8_lossy(&out.stdout).split(['.', '-', '~']).take(3).filter_map(|x| x.parse().ok()).collect();
@@ -331,7 +340,7 @@ pub fn editar_en_editor(doc: &Path, e: crate::puntuacion::Edicion) -> Result<()>
     }
     let exe = apps::locate(apps::def(AppId::Editor)).context("IureEditor no está instalado")?;
     let enlace = format!("iureditor://edit?path={}&action={}", codificar(&doc.to_string_lossy()), e.accion());
-    let st = Command::new(exe).arg(enlace).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    let st = crate::plataforma::sin_consola(&mut Command::new(exe)).arg(enlace).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
     if !st.success() {
         bail!("no aceptó la orden ({st})");
     }
@@ -343,7 +352,7 @@ pub fn editar_en_editor(doc: &Path, e: crate::puntuacion::Edicion) -> Result<()>
 pub fn insertar_en_editor(doc: &Path, texto: &str) -> Result<()> {
     let exe = apps::locate(apps::def(AppId::Editor)).context("IureEditor no está instalado")?;
     let enlace = format!("iureditor://insert?path={}&text={}", codificar(&doc.to_string_lossy()), codificar(texto));
-    let st = Command::new(exe).arg(enlace).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    let st = crate::plataforma::sin_consola(&mut Command::new(exe)).arg(enlace).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
     if !st.success() {
         bail!("no aceptó el texto ({st})");
     }

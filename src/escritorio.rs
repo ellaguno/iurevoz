@@ -1,8 +1,12 @@
 //! Acciones de escritorio permitidas al modo comando. Lista cerrada: nada de shell.
 //! Cada función devuelve un texto breve que el LLM usa para responder.
 
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -30,6 +34,7 @@ fn normalizar(s: &str) -> String {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn dirs_aplicaciones() -> Vec<PathBuf> {
     let mut v = Vec::new();
     if let Some(d) = dirs::data_dir() {
@@ -42,6 +47,7 @@ fn dirs_aplicaciones() -> Vec<PathBuf> {
     v
 }
 
+#[cfg(target_os = "linux")]
 fn leer_desktop(ruta: &Path) -> Option<App> {
     let txt = std::fs::read_to_string(ruta).ok()?;
     let (mut nombre, mut nombre_es, mut dominio) = (None, None, None);
@@ -83,6 +89,7 @@ fn leer_desktop(ruta: &Path) -> Option<App> {
     Some(App { ruta: ruta.to_path_buf(), nombre, claves })
 }
 
+#[cfg(target_os = "linux")]
 fn traducir(dominio: &str, texto: &str) -> Option<String> {
     let out = Command::new("gettext").env("LANGUAGE", "es").args(["-d", dominio, texto]).output().ok()?;
     let t = String::from_utf8(out.stdout).ok()?;
@@ -91,11 +98,11 @@ fn traducir(dominio: &str, texto: &str) -> Option<String> {
 
 /// Nombres comunes en español → palabras que aparecen en los .desktop.
 const SINONIMOS: &[(&str, &[&str])] = &[
-    ("navegador", &["browser", "web", "firefox", "chrome", "chromium"]),
-    ("archivos", &["files", "nautilus", "file manager"]),
-    ("explorador de archivos", &["files", "nautilus"]),
-    ("editor de texto", &["text editor", "gedit", "editor"]),
-    ("terminal", &["terminal", "console", "ptyxis"]),
+    ("navegador", &["browser", "web", "firefox", "chrome", "chromium", "edge"]),
+    ("archivos", &["files", "nautilus", "file manager", "explorador"]),
+    ("explorador de archivos", &["files", "nautilus", "explorador"]),
+    ("editor de texto", &["text editor", "gedit", "editor", "bloc de notas"]),
+    ("terminal", &["terminal", "console", "ptyxis", "simbolo del sistema", "powershell"]),
     ("configuracion", &["settings", "ajustes"]),
     ("ajustes", &["settings", "configuracion"]),
     ("correo", &["mail", "thunderbird", "email"]),
@@ -118,6 +125,44 @@ fn indice() -> &'static Vec<App> {
     I.get_or_init(aplicaciones)
 }
 
+/// Apps de Windows sin acceso directo en el menú Inicio (las de la Tienda, o las que vienen
+/// con el sistema): nombre y lo que se le pasa a ShellExecute.
+#[cfg(windows)]
+const APPS_WINDOWS: &[(&str, &str, &[&str])] = &[
+    ("Calculadora", "calc", &["calculator"]),
+    ("Configuración", "ms-settings:", &["settings", "ajustes", "configuracion"]),
+    ("Bloc de notas", "notepad", &["notepad", "editor de texto"]),
+    ("Explorador de archivos", "explorer", &["file explorer", "archivos", "explorador"]),
+    ("Paint", "mspaint", &["paint", "dibujo"]),
+    ("Terminal", "wt", &["terminal", "windows terminal", "consola"]),
+    ("Administrador de tareas", "taskmgr", &["task manager"]),
+    ("Recortes", "ms-screenclip:", &["captura de pantalla", "screenshot", "snipping tool"]),
+    ("Correo", "outlookmail:", &["mail", "correo", "outlook"]),
+    ("Calendario", "outlookcal:", &["calendar"]),
+    ("Fotos", "ms-photos:", &["photos", "imagenes"]),
+    ("Reloj", "ms-clock:", &["clock", "alarmas"]),
+];
+
+#[cfg(windows)]
+fn aplicaciones() -> Vec<App> {
+    let mut v: Vec<App> = Vec::new();
+    for (nombre, ruta) in crate::plataforma::accesos_menu_inicio() {
+        // el mismo acceso suele estar para el usuario y para todos
+        if !v.iter().any(|x| x.nombre == nombre) {
+            v.push(App { claves: vec![normalizar(&nombre)], ruta, nombre });
+        }
+    }
+    for (nombre, orden, claves) in APPS_WINDOWS {
+        if !v.iter().any(|x| x.claves[0] == normalizar(nombre)) {
+            let mut c = vec![normalizar(nombre)];
+            c.extend(claves.iter().map(|k| normalizar(k)));
+            v.push(App { ruta: PathBuf::from(orden), nombre: nombre.to_string(), claves: c });
+        }
+    }
+    v
+}
+
+#[cfg(target_os = "linux")]
 fn aplicaciones() -> Vec<App> {
     let mut v: Vec<App> = Vec::new();
     for d in dirs_aplicaciones() {
@@ -169,11 +214,15 @@ pub fn abrir_aplicacion(nombre: &str) -> Result<String> {
         let lista = cerca.iter().map(|a| a.nombre.as_str()).collect::<Vec<_>>().join(", ");
         bail!("no encontré una aplicación llamada «{nombre}». Parecidas: {}", if lista.is_empty() { "ninguna" } else { &lista });
     };
+    #[cfg(target_os = "linux")]
     lanzar("gio", &["launch".as_ref(), a.ruta.as_os_str()])?;
+    #[cfg(windows)]
+    crate::plataforma::abrir(&a.ruta)?;
     Ok(format!("abrí {}", a.nombre))
 }
 
 /// Lanza un programa sin shell y sin esperar a que termine.
+#[cfg(target_os = "linux")]
 fn lanzar<S: AsRef<std::ffi::OsStr>>(prog: &str, args: &[S]) -> Result<()> {
     Command::new(prog)
         .args(args)
@@ -193,7 +242,7 @@ pub fn abrir_url(url: &str) -> Result<String> {
     if url.contains(char::is_whitespace) {
         bail!("URL inválida");
     }
-    lanzar("gio", &["open", &url])?;
+    crate::plataforma::abrir(&url)?;
     Ok(format!("abrí {url}"))
 }
 
@@ -208,7 +257,7 @@ fn codificar(s: &str) -> String {
 }
 
 pub fn buscar_web(consulta: &str) -> Result<String> {
-    lanzar("gio", &["open", &format!("https://duckduckgo.com/?q={}", codificar(consulta))])?;
+    crate::plataforma::abrir(format!("https://duckduckgo.com/?q={}", codificar(consulta)))?;
     Ok(format!("busqué «{consulta}» en la web"))
 }
 
@@ -225,16 +274,16 @@ pub fn abrir_carpeta(nombre: &str) -> Result<String> {
         _ => {
             // ruta relativa dentro de la carpeta personal; nunca fuera de ella
             let home = dirs::home_dir().context("sin carpeta personal")?;
-            let p = home.join(nombre.trim().trim_start_matches('~').trim_start_matches('/'));
-            let p = p.canonicalize().with_context(|| format!("no existe la carpeta «{nombre}»"))?;
-            if !p.starts_with(&home) || !p.is_dir() {
+            let p = home.join(nombre.trim().trim_start_matches('~').trim_start_matches(['/', '\\']));
+            let p = crate::plataforma::canonica(&p).with_context(|| format!("no existe la carpeta «{nombre}»"))?;
+            if !p.starts_with(crate::plataforma::canonica(&home).unwrap_or(home)) || !p.is_dir() {
                 bail!("solo puedo abrir carpetas dentro de tu carpeta personal");
             }
             Some(p)
         }
     }
     .context("no encontré esa carpeta")?;
-    lanzar("gio", &["open".as_ref(), dir.as_os_str()])?;
+    crate::plataforma::abrir(&dir)?;
     Ok(format!("abrí la carpeta {}", dir.display()))
 }
 
@@ -327,6 +376,22 @@ pub fn combinacion(c: &str) -> Result<Vec<u32>> {
 
 // ── sistema ──────────────────────────────────────────────────────────────────
 
+#[cfg(windows)]
+pub fn volumen(accion: &str, cantidad: Option<u32>) -> Result<String> {
+    let paso = cantidad.unwrap_or(10).clamp(1, 50);
+    let d = paso as f32 / 100.0;
+    let (subir, mudo, msg) = match normalizar(accion).as_str() {
+        "subir" => (Some(d), None, format!("subí el volumen {paso}%")),
+        "bajar" => (Some(-d), None, format!("bajé el volumen {paso}%")),
+        "silenciar" => (None, Some(true), "silencié el audio".to_string()),
+        "activar" => (None, Some(false), "activé el audio".to_string()),
+        a => bail!("acción de volumen desconocida: {a}"),
+    };
+    crate::plataforma::volumen(subir, mudo)?;
+    Ok(msg)
+}
+
+#[cfg(target_os = "linux")]
 pub fn volumen(accion: &str, cantidad: Option<u32>) -> Result<String> {
     let paso = cantidad.unwrap_or(10).clamp(1, 50);
     let sink = "@DEFAULT_AUDIO_SINK@";
@@ -344,10 +409,7 @@ pub fn volumen(accion: &str, cantidad: Option<u32>) -> Result<String> {
     Ok(msg)
 }
 
-/// ¿Hay un proceso con este nombre exacto? (p. ej. «iureditor» ya abierto)
-pub fn corre(nombre: &str) -> bool {
-    Command::new("pgrep").args(["-x", nombre]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
-}
+pub use crate::plataforma::corre;
 
 pub fn hora_fecha() -> String {
     use chrono::{Datelike, Timelike};
@@ -367,7 +429,11 @@ pub fn hora_fecha() -> String {
 
 // ── lectura ──────────────────────────────────────────────────────────────────
 
+#[cfg(windows)]
+pub use crate::plataforma::seleccion;
+
 /// Texto seleccionado (selección primaria); si no hay, el portapapeles.
+#[cfg(target_os = "linux")]
 pub fn seleccion() -> Result<String> {
     for args in [&["--primary", "--no-newline"][..], &["--no-newline"][..]] {
         let mut hijo = Command::new("wl-paste").args(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().context("falta wl-paste")?;

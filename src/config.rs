@@ -200,8 +200,9 @@ pub fn dir_config() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("iurevoz")
 }
 
+/// Modelos y datos grandes: en Windows van a `%LOCALAPPDATA%` (no viajan con el perfil).
 pub fn dir_datos() -> PathBuf {
-    dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("iurevoz")
+    dirs::data_local_dir().unwrap_or_else(|| PathBuf::from(".")).join("iurevoz")
 }
 
 impl Config {
@@ -220,12 +221,15 @@ impl Config {
     }
 
     pub fn guardar(&self) -> anyhow::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir_all(dir_config())?;
         let ruta = Self::ruta();
         std::fs::write(&ruta, toml::to_string_pretty(self)?)?;
-        // puede contener la API key
-        std::fs::set_permissions(&ruta, std::fs::Permissions::from_mode(0o600))?;
+        // puede contener la API key (en Windows, %APPDATA% ya es solo del usuario)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&ruta, std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
 }

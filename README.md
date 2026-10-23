@@ -2,6 +2,26 @@
 
 Dictado y control del escritorio por voz para Linux, local y solo CPU. Nuevo miembro del suite Iurefficient (todavía en exploración).
 
+## Windows (en pruebas)
+
+La misma app compila para Windows 10/11 x64. El instalador (`IureVoz-X.Y.Z-windows-x64.exe`, por usuario y sin permisos de administrador) y un `.zip` portátil salen del flujo de GitHub Actions junto con el `.deb`; *Actions → Release → Run workflow* los compila de cualquier rama sin publicar nada. Lo que cambia respecto a Linux:
+
+| | Linux (GNOME) | Windows |
+|---|---|---|
+| Teclear en la ventana activa | portal RemoteDesktop (pide permiso una vez) | `SendInput` con caracteres Unicode: acentos y «ñ» sin teclas muertas, sin permiso |
+| Atajos globales | atajos de GNOME o portal GlobalShortcuts | `RegisterHotKey` al arrancar: Ctrl+Alt+Espacio, Ctrl+Alt+C, Ctrl+Alt+L |
+| Ícono | extensión AppIndicator | área de notificación, junto al reloj |
+| Inicio con la sesión | `~/.config/autostart` | `HKCU\…\CurrentVersion\Run` |
+| Leer la selección | selección primaria (`wl-paste`) | Ctrl+C y se devuelve el portapapeles como estaba |
+| Abrir apps | archivos `.desktop` | accesos del menú Inicio y las apps del sistema (Calculadora, Configuración…) |
+| Volumen | `wpctl` | Core Audio del dispositivo predeterminado |
+| Llavero de la suite | Secret Service (`secret-tool`) | Administrador de credenciales (`keyring`) |
+| Auxiliares (`llama-server`, MCP) | mueren con la app por `PR_SET_PDEATHSIG` | Job Object que los termina al cerrar la app |
+| Socket de control | `$XDG_RUNTIME_DIR/iurevoz.sock` | socket Unix de Windows en `%TEMP%` |
+| Datos y registro | `~/.local/share/iurevoz`, `~/.local/state/iurevoz` | ajustes en `%APPDATA%\iurevoz`; modelos y registro en `%LOCALAPPDATA%\iurevoz` |
+
+Pendiente en Windows: el dictado directo a IureEditor por `iureditor://insert` (no hay paquete del que leer su versión; `IUREVOZ_EDITOR_INSERTA=1` lo fuerza) y probarlo en equipos reales. Desde Linux, `cargo check --target x86_64-pc-windows-msvc` sirve para revisar que compile; para enlazar hace falta el MSVC de Windows (o el flujo de Actions).
+
 ## Uso
 
 ```bash

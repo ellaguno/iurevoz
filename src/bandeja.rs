@@ -1,6 +1,7 @@
 //! Ícono en la barra superior de GNOME (StatusNotifierItem; lo muestra la extensión
-//! AppIndicator de Ubuntu). El color dice qué hace IureVoz: gris inactivo, verde con la
-//! oreja abierta a «oye compu», rojo dictando y azul escuchando una instrucción.
+//! AppIndicator de Ubuntu) o en el área de notificación de Windows. El color dice qué hace
+//! IureVoz: gris inactivo, verde con la oreja abierta a «oye compu», rojo dictando y azul
+//! escuchando una instrucción.
 //!
 //! Con el ícono, cerrar la ventana la destruye y IureVoz sigue aquí; «Mostrar IureVoz» crea
 //! otra (en Wayland una ventana no se puede esconder y volver a mostrar). «Salir» termina.
@@ -8,6 +9,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use ksni::TrayMethods;
 
 use crate::control::{Control, Controlador};
@@ -42,7 +44,7 @@ impl Modo {
         }
     }
 
-    fn texto(self) -> &'static str {
+    pub fn texto(self) -> &'static str {
         match self {
             Modo::Inactivo => "Inactivo",
             Modo::Escuchando => "Esperando «oye compu»",
@@ -70,9 +72,16 @@ fn segmento(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
     ((px - bx * h).powi(2) + (py - by * h).powi(2)).sqrt()
 }
 
-/// Círculo del color del modo con un micrófono blanco, en ARGB32 (orden de red) como
-/// lo pide StatusNotifierItem. Se dibuja con distancias, con bordes suavizados.
-pub fn icono(modo: Modo, lado: i32) -> ksni::Icon {
+/// Imagen cuadrada en ARGB32 (orden de red), como la pide StatusNotifierItem.
+pub struct Icono {
+    pub width: i32,
+    pub height: i32,
+    pub data: Vec<u8>,
+}
+
+/// Círculo del color del modo con un micrófono blanco. Se dibuja con distancias, con bordes
+/// suavizados.
+pub fn icono(modo: Modo, lado: i32) -> Icono {
     let (r, g, b) = modo.color();
     let n = lado as f32;
     let cubre = |d: f32| (0.5 - d * n).clamp(0.0, 1.0);
@@ -92,14 +101,16 @@ pub fn icono(modo: Modo, lado: i32) -> ksni::Icon {
             data.extend_from_slice(&[(fondo * 255.0).round() as u8, mezcla(r), mezcla(g), mezcla(b)]);
         }
     }
-    ksni::Icon { width: lado, height: lado, data }
+    Icono { width: lado, height: lado, data }
 }
 
+#[cfg(target_os = "linux")]
 struct Bandeja {
     modo: Modo,
     ctl: Controlador,
 }
 
+#[cfg(target_os = "linux")]
 impl ksni::Tray for Bandeja {
     fn id(&self) -> String {
         "iurevoz".into()
@@ -110,7 +121,12 @@ impl ksni::Tray for Bandeja {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        vec![icono(self.modo, 22), icono(self.modo, 32), icono(self.modo, 48)]
+        [22, 32, 48]
+            .map(|n| {
+                let i = icono(self.modo, n);
+                ksni::Icon { width: i.width, height: i.height, data: i.data }
+            })
+            .to_vec()
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
@@ -189,6 +205,7 @@ fn salir() {
 /// Pone el ícono y lo mantiene al día con el estado. Sin extensión de indicadores no hay
 /// ícono y la ventana se comporta como siempre; si la extensión llega tarde (al iniciar
 /// sesión), el ícono aparece entonces.
+#[cfg(target_os = "linux")]
 pub fn iniciar(ctl: Controlador) {
     std::thread::Builder::new()
         .name("bandeja".into())
@@ -224,7 +241,117 @@ pub fn iniciar(ctl: Controlador) {
         .expect("hilo bandeja");
 }
 
+/// Windows: el ícono vive en su propio hilo, que atiende los mensajes de su ventana oculta
+/// y lo actualiza cada 250 ms.
+#[cfg(windows)]
+pub fn iniciar(ctl: Controlador) {
+    std::thread::Builder::new()
+        .name("bandeja".into())
+        .spawn(move || {
+            if let Err(e) = bandeja_windows(ctl) {
+                ACTIVA.store(false, Ordering::Relaxed);
+                eprintln!("bandeja: sin ícono ({e})");
+            }
+        })
+        .expect("hilo bandeja");
+}
+
+#[cfg(windows)]
+fn bandeja_windows(ctl: Controlador) -> anyhow::Result<()> {
+    use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+    use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage};
+
+    // Windows pide RGBA; el dibujo es ARGB
+    let imagen = |m: Modo| -> anyhow::Result<tray_icon::Icon> {
+        let i = icono(m, 32);
+        let rgba = i.data.chunks(4).flat_map(|p| [p[1], p[2], p[3], p[0]]).collect();
+        Ok(tray_icon::Icon::from_rgba(rgba, i.width as u32, i.height as u32)?)
+    };
+    let estado = MenuItem::new(Modo::Inactivo.texto(), false, None);
+    let mostrar = MenuItem::new("Mostrar IureVoz", true, None);
+    let dictar = MenuItem::new("Dictar", true, None);
+    let oir = CheckMenuItem::new("Escuchar «oye compu»", true, false, None);
+    let fin = MenuItem::new("Salir", true, None);
+    let menu = Menu::new();
+    menu.append_items(&[&estado, &PredefinedMenuItem::separator(), &mostrar, &dictar, &oir, &PredefinedMenuItem::separator(), &fin])?;
+    let modo = Modo::de(&ctl);
+    let tray = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("IureVoz").with_icon(imagen(modo)?).build()?;
+    ACTIVA.store(true, Ordering::Relaxed);
+
+    let mut antes = None;
+    loop {
+        let mut msg = MSG::default();
+        while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        while let Ok(ev) = MenuEvent::receiver().try_recv() {
+            let dictando = Modo::de(&ctl) == Modo::Dictando;
+            if ev.id == *mostrar.id() {
+                crate::ui::mostrar_ventana();
+            } else if ev.id == *dictar.id() {
+                ctl.enviar(Control::Dictar(!dictando));
+            } else if ev.id == *oir.id() {
+                ctl.enviar(Control::Vigilia(!ctl.estado.vigilia.load(Ordering::Relaxed)));
+            } else if ev.id == *fin.id() {
+                salir();
+            }
+        }
+        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
+                crate::ui::mostrar_ventana();
+            }
+        }
+        let ahora = (Modo::de(&ctl), ctl.estado.vigilia.load(Ordering::Relaxed));
+        if antes != Some(ahora) {
+            antes = Some(ahora);
+            let _ = tray.set_icon(Some(imagen(ahora.0)?));
+            let _ = tray.set_tooltip(Some(format!("IureVoz · {}", ahora.0.texto())));
+            estado.set_text(ahora.0.texto());
+            dictar.set_text(if ahora.0 == Modo::Dictando { "Detener el dictado" } else { "Dictar" });
+            oir.set_checked(ahora.1);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Arranque con la sesión, en Windows: valor `IureVoz` en `HKCU\…\Run`.
+#[cfg(windows)]
+pub mod arranque {
+    use std::process::Command;
+
+    const CLAVE: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+
+    fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
+        crate::plataforma::sin_consola(&mut Command::new("reg")).args(args).output()
+    }
+
+    pub fn activo() -> bool {
+        reg(&["query", CLAVE, "/v", "IureVoz"]).is_ok_and(|o| o.status.success())
+    }
+
+    /// Crea o quita la entrada. Arranca sin ventana, solo con el ícono (`--autoarranque`).
+    pub fn fijar(si: bool) -> anyhow::Result<()> {
+        let out = if si {
+            let exe = std::env::current_exe()?;
+            reg(&["add", CLAVE, "/v", "IureVoz", "/t", "REG_SZ", "/d", &format!("\"{}\" --autoarranque", exe.display()), "/f"])?
+        } else if activo() {
+            reg(&["delete", CLAVE, "/v", "IureVoz", "/f"])?
+        } else {
+            return Ok(());
+        };
+        if !out.status.success() {
+            anyhow::bail!("reg: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(())
+    }
+}
+
 /// Arranque con la sesión: `~/.config/autostart/mx.iurefficient.IureVoz.desktop`.
+#[cfg(target_os = "linux")]
 pub mod arranque {
     use std::path::PathBuf;
 

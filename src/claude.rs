@@ -5,7 +5,6 @@
 //! (por el socket de control) y espera el «sí» o «no» del usuario.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -23,7 +22,7 @@ Al terminar responde en español en una a tres frases cortas, sin markdown, porq
 
 #[allow(dead_code)]
 pub fn disponible() -> bool {
-    Command::new("claude").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+    crate::plataforma::claude().arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 /// Versión hablada: solo qué se va a hacer, sin el comando ni rutas completas.
@@ -65,8 +64,8 @@ pub struct Tarea {
     pub resumen: String,
     pub inicio: std::time::Instant,
     pub ultimo: String,
-    /// grupo de procesos de `claude` (incluye lo que lance, como scripts)
-    pgid: u32,
+    /// proceso de `claude`; en Linux también su grupo (incluye lo que lance, como scripts)
+    pid: u32,
     detenida: bool,
 }
 
@@ -83,7 +82,11 @@ pub fn detener(num: u64) {
     let mut t = TAREAS.lock().unwrap();
     if let Some(x) = t.iter_mut().find(|x| x.num == num) {
         x.detenida = true;
-        let _ = Command::new("kill").args(["-TERM", &format!("-{}", x.pgid)]).status();
+        #[cfg(unix)]
+        let _ = Command::new("kill").args(["-TERM", &format!("-{}", x.pid)]).status();
+        // en Windows no hay grupos de procesos: se termina el árbol
+        #[cfg(windows)]
+        let _ = crate::plataforma::sin_consola(Command::new("taskkill").args(["/T", "/F", "/PID", &x.pid.to_string()])).status();
     }
 }
 
@@ -116,16 +119,19 @@ pub fn ejecutar(tarea: &str, mut progreso: impl FnMut(Progreso)) -> Result<Strin
     std::fs::write(&ruta_mcp, mcp.to_string())?;
     let home = dirs::home_dir().context("sin carpeta personal")?;
 
-    let mut cmd = Command::new("claude");
+    let mut cmd = crate::plataforma::claude();
     // si IureVoz se lanzó desde una sesión de Claude Code, no heredar su configuración
     for (k, _) in std::env::vars() {
         if k.starts_with("CLAUDE") && k != "CLAUDE_CONFIG_DIR" {
             cmd.env_remove(k);
         }
     }
-    use std::os::unix::process::CommandExt;
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0); // grupo propio: «Detener» termina también lo que Claude lance
+    }
     let mut hijo = cmd
-        .process_group(0) // grupo propio: «Detener» termina también lo que Claude lance
         .current_dir(&home)
         .args(["-p", tarea, "--output-format", "stream-json", "--verbose"])
         .arg("--mcp-config")
@@ -147,7 +153,7 @@ pub fn ejecutar(tarea: &str, mut progreso: impl FnMut(Progreso)) -> Result<Strin
         resumen,
         inicio: std::time::Instant::now(),
         ultimo: "empezando…".into(),
-        pgid: hijo.id(),
+        pid: hijo.id(),
         detenida: false,
     });
     let _registro = Registro(num);
@@ -204,17 +210,9 @@ pub fn ejecutar(tarea: &str, mut progreso: impl FnMut(Progreso)) -> Result<Strin
 
 /// Pregunta a la app abierta. Sin app (o sin respuesta en 2 minutos), se niega.
 fn preguntar_a_la_app(pedido: &Value) -> (bool, String) {
-    let ruta = dirs::runtime_dir().unwrap_or_else(std::env::temp_dir).join("iurevoz.sock");
-    let Ok(mut s) = UnixStream::connect(ruta) else {
+    let Some(r) = crate::control::preguntar_a_instancia(&format!("permiso {pedido}\n"), Duration::from_secs(120)) else {
         return (false, "IureVoz no está abierto para pedir permiso".into());
     };
-    let _ = s.set_read_timeout(Some(Duration::from_secs(120)));
-    if s.write_all(format!("permiso {pedido}\n").as_bytes()).is_err() {
-        return (false, "no pude preguntar al usuario".into());
-    }
-    let _ = s.shutdown(std::net::Shutdown::Write);
-    let mut r = String::new();
-    let _ = s.read_to_string(&mut r);
     match r.trim() {
         "si" => (true, String::new()),
         "" => (false, "el usuario no respondió a tiempo".into()),

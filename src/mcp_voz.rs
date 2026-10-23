@@ -130,7 +130,7 @@ pub fn registrado_en_claude_code() -> bool {
 /// Registra IureVoz en Claude Code con `claude mcp add`.
 pub fn registrar_en_claude_code() -> anyhow::Result<String> {
     let c = comando_claude_code()?;
-    let out = std::process::Command::new(&c[0]).args(&c[1..]).output().context("no encontré el comando `claude` (Claude Code)")?;
+    let out = crate::plataforma::claude().args(&c[1..]).output().context("no encontré el comando `claude` (Claude Code)")?;
     if !out.status.success() {
         anyhow::bail!("claude mcp add: {}", String::from_utf8_lossy(&out.stderr).trim());
     }

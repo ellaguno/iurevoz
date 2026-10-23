@@ -268,12 +268,7 @@ fn una_pasada(cfg: &Config, voz: Option<&Voz>, ocupado: &dyn Fn() -> bool) -> Re
 }
 
 fn notificar(titulo: &str, cuerpo: &str) {
-    let cuerpo: String = cuerpo.chars().take(300).collect();
-    let _ = std::process::Command::new("notify-send")
-        .args(["--app-name=IureVoz", "--icon=appointment-soon", titulo, &cuerpo])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    crate::plataforma::notificar(titulo, cuerpo, "appointment-soon");
 }
 
 fn conectado() -> bool {

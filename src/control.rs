@@ -5,7 +5,10 @@
 //! viven en su propio hilo.
 
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(windows)]
+use uds_windows::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -384,7 +387,8 @@ impl Controlador {
     }
 }
 
-fn ruta_socket() -> PathBuf {
+/// En Windows 10+ también hay sockets Unix; queda en el `%TEMP%` del usuario.
+pub fn ruta_socket() -> PathBuf {
     dirs::runtime_dir().unwrap_or_else(std::env::temp_dir).join("iurevoz.sock")
 }
 

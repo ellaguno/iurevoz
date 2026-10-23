@@ -3,6 +3,16 @@
 Versiones de IureVoz. El flujo `.github/workflows/release.yml` toma las notas de la
 sección `## vX.Y.Z` al subir la etiqueta.
 
+## Sin publicar
+
+### Agregado
+- **Versión para Windows** (en pruebas). Teclea con `SendInput`, registra los atajos
+  Ctrl+Alt+Espacio, Ctrl+Alt+C y Ctrl+Alt+L, pone su ícono junto al reloj, guarda las
+  credenciales de la suite en el Administrador de credenciales y descarga el
+  `llama-server` de Windows con Vulkan. El flujo de publicación arma también un
+  instalador y un `.zip`.
+- La voz lee de las rutas de Windows solo el nombre final, como con las de Linux.
+
 ## v0.2.2 — 2026-10-23
 
 ### Corregido

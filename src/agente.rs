@@ -16,7 +16,7 @@ const MAX_PASOS: usize = 5;
 
 fn sistema() -> String {
     format!(
-        "Eres IureVoz, un asistente que controla el escritorio Linux (GNOME) de quien te habla. \
+        "Eres IureVoz, un asistente que controla el escritorio {} de quien te habla. \
 La instrucción viene de un reconocedor de voz y puede tener errores: interpreta la intención. \
 Usa SOLO las herramientas disponibles. Si para hacerlo hay que trabajar en el sistema (crear o editar un \
 script o programa, ejecutar comandos, instalar o configurar, mover, copiar, renombrar o borrar archivos) usa \
@@ -38,6 +38,7 @@ No uses markdown ni listas. La persona está en México: moneda en pesos, IVA de
 Si una cuenta es ambigua, haz la interpretación más común y dila en la respuesta. Si la instrucción completa o responde a algo de los mensajes anteriores \
 (p. ej. solo un número tras preguntar «¿de qué cantidad?»), úsala junto con ese contexto. \
 Hoy es {} (para la hora exacta usa hora_fecha).",
+        if cfg!(windows) { "Windows" } else { "Linux (GNOME)" },
         // solo la fecha: con la hora el prefijo cambiaría cada minuto y no serviría la caché
         esc::hora_fecha().rsplit_once(',').map_or_else(|| esc::hora_fecha(), |(f, _)| f.to_string())
     )

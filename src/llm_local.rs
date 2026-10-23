@@ -35,7 +35,7 @@ fn modelo(clave: &str) -> Result<&'static (&'static str, &'static str, &'static 
 }
 
 fn ruta_binario() -> PathBuf {
-    dir().join(format!("llama-{VERSION}")).join("llama-server")
+    dir().join(format!("llama-{VERSION}")).join(if cfg!(windows) { "llama-server.exe" } else { "llama-server" })
 }
 
 fn ruta_modelo(clave: &str) -> Result<PathBuf> {
@@ -51,17 +51,18 @@ pub fn estado(clave: &str) -> (bool, bool) {
 pub fn preparar(clave: &str, progreso: &dyn Fn(&str, f32)) -> Result<()> {
     std::fs::create_dir_all(dir().join("modelos"))?;
     if !ruta_binario().exists() {
-        let url = format!(
-            "https://github.com/ggml-org/llama.cpp/releases/download/{VERSION}/llama-{VERSION}-bin-ubuntu-vulkan-x64.tar.gz"
-        );
+        let paquete = if cfg!(windows) { "win-vulkan-x64.zip" } else { "ubuntu-vulkan-x64.tar.gz" };
+        let url = format!("https://github.com/ggml-org/llama.cpp/releases/download/{VERSION}/llama-{VERSION}-bin-{paquete}");
         let tmp = dir().join(".binario.parcial");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp)?;
         let lector = descarga(&url, "llama.cpp", progreso)?;
-        tar::Archive::new(flate2::read::GzDecoder::new(lector)).unpack(&tmp)?;
+        desempacar(lector, &tmp)?;
+        // el .tar.gz trae una carpeta `llama-bXXXX`; el .zip de Windows, los archivos sueltos
+        let origen = if tmp.join(format!("llama-{VERSION}")).is_dir() { tmp.join(format!("llama-{VERSION}")) } else { tmp.clone() };
         let destino = dir().join(format!("llama-{VERSION}"));
         let _ = std::fs::remove_dir_all(&destino);
-        std::fs::rename(tmp.join(format!("llama-{VERSION}")), &destino)?;
+        std::fs::rename(&origen, &destino)?;
         let _ = std::fs::remove_dir_all(&tmp);
     }
     let destino = ruta_modelo(clave)?;
@@ -73,6 +74,22 @@ pub fn preparar(clave: &str, progreso: &dyn Fn(&str, f32)) -> Result<()> {
         std::io::copy(&mut lector, &mut std::fs::File::create(&tmp)?)?;
         std::fs::rename(&tmp, &destino)?;
     }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn desempacar(lector: impl Read, destino: &Path) -> Result<()> {
+    tar::Archive::new(flate2::read::GzDecoder::new(lector)).unpack(destino)?;
+    Ok(())
+}
+
+/// El .zip necesita acceso aleatorio: se guarda completo y luego se extrae.
+#[cfg(windows)]
+fn desempacar(mut lector: impl Read, destino: &Path) -> Result<()> {
+    let zip = destino.join("paquete.zip");
+    std::io::copy(&mut lector, &mut std::fs::File::create(&zip)?)?;
+    zip::ZipArchive::new(std::fs::File::open(&zip)?)?.extract(destino)?;
+    std::fs::remove_file(&zip)?;
     Ok(())
 }
 
@@ -141,7 +158,7 @@ static SERVIDOR: Mutex<Option<Servidor>> = Mutex::new(None);
 /// GPU dedicada para Vulkan («Vulkan1: Quadro P1000…»): se evita la integrada, que es
 /// lenta y comparte la RAM. Sin GPU dedicada, todo en CPU.
 fn elegir_dispositivo(bin: &Path) -> String {
-    let out = Command::new(bin).arg("--list-devices").env("LD_LIBRARY_PATH", bin.parent().unwrap()).output();
+    let out = crate::plataforma::sin_consola(&mut Command::new(bin)).arg("--list-devices").env("LD_LIBRARY_PATH", bin.parent().unwrap()).output();
     let texto = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr)).unwrap_or_default();
     texto
         .lines()

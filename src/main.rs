@@ -1,7 +1,12 @@
-//! iurevoz: dictado por voz local para Linux.
+//! iurevoz: dictado por voz local para Linux y Windows.
+
+// en Windows, sin ventana de consola al abrirla desde el menú (los subcomandos toman la de
+// la terminal que los lanza)
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod agente;
 mod asr;
+#[cfg(target_os = "linux")]
 mod atajos_gnome;
 mod audio;
 mod bandeja;
@@ -19,12 +24,15 @@ mod mcp_voz;
 mod modelos;
 mod motor;
 mod normalizar;
+mod plataforma;
+#[cfg_attr(windows, path = "portal_windows.rs")]
 mod portal;
 mod procesos;
 mod puntuacion;
 mod resumen;
 mod rasgos;
 mod suite;
+#[cfg(target_os = "linux")]
 mod teclas;
 mod ui;
 mod vigilia;
@@ -61,6 +69,10 @@ Uso:
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(windows)]
+    if !args.is_empty() && args.iter().all(|a| a != "--autoarranque" && a != "--sin-portal") {
+        plataforma::usar_consola_del_padre();
+    }
     match args.first().map(String::as_str) {
         Some("-h" | "--help" | "ayuda") => print!("{AYUDA}"),
         Some(o @ ("alternar" | "leer" | "callar" | "rechazar")) if args.len() == 1 => {
@@ -87,6 +99,7 @@ fn main() -> Result<()> {
             llm_local::apagar();
         }
         Some("conectar-iurefficient") => println!("{}", iure::conectar()?),
+        #[cfg(target_os = "linux")]
         Some("instalar-atajos") => println!("{}", atajos_gnome::instalar()?),
         Some("comando") if args.len() == 1 => {
             if !control::enviar_a_instancia("comando") {
@@ -228,7 +241,12 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// En Windows el acceso del menú Inicio lo crea el instalador.
+#[cfg(windows)]
+fn instalar_lanzador() {}
+
 /// Los portales identifican a las apps fuera de Flatpak por su archivo .desktop.
+#[cfg(target_os = "linux")]
 fn instalar_lanzador() {
     let Some(dir) = dirs::data_dir().map(|d| d.join("applications")) else { return };
     let Ok(exe) = std::env::current_exe() else { return };
@@ -319,11 +337,7 @@ fn probar_vigilia(ruta: &str) -> Result<()> {
         println!("Verificación con Moonshine");
     }
     let paso = asr::SR as usize / 10;
-    let cpu = || {
-        let mut u = unsafe { std::mem::zeroed::<Rusage>() };
-        unsafe { getrusage(0, &mut u) };
-        u.ru_utime[0] as f64 + u.ru_utime[1] as f64 / 1e6 + u.ru_stime[0] as f64 + u.ru_stime[1] as f64 / 1e6
-    };
+    let cpu = plataforma::cpu_del_proceso;
     let (mut cpu_vigilia, mut seg_vigilia) = (0.0, 0.0);
     let mut i = 0;
     while i < muestras.len() {
@@ -389,20 +403,9 @@ fn probar_vigilia(ruta: &str) -> Result<()> {
     Ok(())
 }
 
-/// `struct rusage` de Linux x86-64 (solo se leen los tiempos de CPU del proceso).
-#[repr(C)]
-struct Rusage {
-    ru_utime: [i64; 2],
-    ru_stime: [i64; 2],
-    _resto: [i64; 14],
-}
-
-unsafe extern "C" {
-    fn getrusage(who: i32, usage: *mut Rusage) -> i32;
-}
-
 /// Registro de diagnóstico (opción de Ajustes o `IUREVOZ_LOG=1`). Abierta desde el menú, la
-/// app no tiene terminal: la salida de error se manda a `~/.local/state/iurevoz/iurevoz.log`.
+/// app no tiene terminal: la salida de error se manda a `~/.local/state/iurevoz/iurevoz.log`
+/// (en Windows, `%LOCALAPPDATA%\iurevoz\iurevoz.log`).
 /// Desde una terminal se deja ahí. Lleva lo dictado, así que nunca sale del equipo.
 fn abrir_registro() {
     use std::io::IsTerminal;
@@ -411,7 +414,7 @@ fn abrir_registro() {
     if std::io::stderr().is_terminal() {
         return;
     }
-    let dir = dirs::state_dir().unwrap_or_else(|| config::dir_datos()).join("iurevoz");
+    let dir = dirs::state_dir().or_else(dirs::data_local_dir).unwrap_or_else(config::dir_datos).join("iurevoz");
     let _ = std::fs::create_dir_all(&dir);
     let ruta = dir.join("iurevoz.log");
     // uno anterior queda como .1 si creció mucho
@@ -419,14 +422,17 @@ fn abrir_registro() {
         let _ = std::fs::rename(&ruta, dir.join("iurevoz.log.1"));
     }
     let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&ruta) else { return };
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&ruta, std::fs::Permissions::from_mode(0o600));
+        use std::os::fd::AsRawFd;
+        unsafe {
+            libc::dup2(f.as_raw_fd(), 1);
+            libc::dup2(f.as_raw_fd(), 2);
+        }
     }
-    use std::os::fd::AsRawFd;
-    unsafe {
-        libc::dup2(f.as_raw_fd(), 1);
-        libc::dup2(f.as_raw_fd(), 2);
-    }
+    #[cfg(windows)]
+    plataforma::error_a_archivo(f);
     eprintln!("\n=== IureVoz {} · {} ===", env!("CARGO_PKG_VERSION"), chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
 }

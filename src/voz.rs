@@ -207,6 +207,12 @@ fn limpiar_palabras(t: &str) -> String {
                 let ultimo = limpio.trim_end_matches('/').rsplit('/').next().unwrap_or("");
                 return Some(if ultimo.is_empty() || ultimo == "~" { format!("una carpeta{fin}") } else { format!("{}{fin}", ultimo.replace(['_', '-'], " ")) });
             }
+            // rutas de Windows («C:\Users\u\notas.txt», «\\servidor\carpeta»), igual
+            let unidad = limpio.as_bytes().get(1..3) == Some(b":\\") && limpio.as_bytes()[0].is_ascii_alphabetic();
+            if unidad || limpio.starts_with("\\\\") || limpio.matches('\\').count() >= 2 {
+                let ultimo = limpio.trim_end_matches('\\').rsplit('\\').next().unwrap_or("");
+                return Some(if ultimo.is_empty() || ultimo.ends_with(':') { format!("una carpeta{fin}") } else { format!("{}{fin}", ultimo.replace(['_', '-'], " ")) });
+            }
             // fragmentos de shell o código: sin letras suficientes para leerse
             let letras = limpio.chars().filter(|c| c.is_alphabetic()).count();
             let raros = limpio.chars().filter(|c| matches!(c, '$' | '|' | '>' | '<' | '{' | '}' | '[' | ']' | '=' | '\\' | '^' | '~' | '*' | '#' | '`')).count();
@@ -429,6 +435,7 @@ mod pruebas {
     #[test]
     fn limpia_para_voz() {
         assert_eq!(para_voz("Guardé el script en /home/ellaguno/ultimos_accesos.sh y lo probé."), "Guardé el script en ultimos accesos.sh y lo probé.");
+        assert_eq!(para_voz(r"Guardé el script en C:\Users\eduardo\ultimos_accesos.ps1 y lo probé."), "Guardé el script en ultimos accesos.ps1 y lo probé.");
         assert_eq!(para_voz("Ejecuta `~/ultimos_accesos.sh 2 | head -50` para verlo."), "Ejecuta ultimos accesos.sh para verlo.");
         assert_eq!(para_voz("Mira https://es.wikipedia.org/wiki/Amparo, ahí está."), "Mira un enlace a es.wikipedia.org, ahí está.");
         assert_eq!(para_voz("Hecho:\n```bash\nls -la $HOME\n```\nListo."), "Hecho: Listo.");

@@ -672,12 +672,7 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
 
 /// Notificación de escritorio: llega aunque la ventana esté oculta.
 fn notificar(titulo: &str, cuerpo: &str) {
-    let cuerpo: String = cuerpo.chars().take(300).collect();
-    let _ = std::process::Command::new("notify-send")
-        .args(["--app-name=IureVoz", "--icon=audio-input-microphone", titulo, &cuerpo])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    crate::plataforma::notificar(titulo, cuerpo, "audio-input-microphone");
 }
 
 /// Corre la tarea con Claude Code en su propio hilo: puede tardar minutos.
