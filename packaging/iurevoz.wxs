@@ -23,6 +23,9 @@
         <Component>
           <File Source="README.md" />
         </Component>
+        <Component>
+          <File Source="LICENSE.md" />
+        </Component>
       </Directory>
     </StandardDirectory>
 

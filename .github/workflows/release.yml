@@ -81,7 +81,7 @@ jobs:
           & "$env:USERPROFILE\.dotnet\tools\wix.exe" build -arch x64 -d "Version=$v" -o "target\instalador\IureVoz-$v-windows-x64.msi" packaging\iurevoz.wxs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item target\instalador\*.wixpdb -ErrorAction SilentlyContinue
-          Compress-Archive -Path target\release\iurevoz.exe, README.md -DestinationPath "target\instalador\IureVoz-$v-windows-x64.zip"
+          Compress-Archive -Path target\release\iurevoz.exe, README.md, LICENSE.md -DestinationPath "target\instalador\IureVoz-$v-windows-x64.zip"
           Get-ChildItem target\instalador
 
       - uses: actions/upload-artifact@v7

@@ -37,6 +37,7 @@ Name: "inicio"; Description: "Abrir IureVoz al iniciar la sesión (solo el ícon
 [Files]
 Source: "..\target\release\iurevoz.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; el AppUserModelID deja que las notificaciones digan «IureVoz»

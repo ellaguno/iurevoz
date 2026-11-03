@@ -3,7 +3,7 @@ name = "iurevoz"
 version = "0.2.2"
 edition = "2024"
 description = "Dictado y órdenes por voz para Linux (GNOME) y Windows, local; parte de la suite Iurefficient"
-license = "Proprietary"
+license = "Apache-2.0"
 authors = ["Eduardo Llaguno <eduardo@llaguno.com>"]
 homepage = "https://github.com/ellaguno/iurevoz"
 
@@ -92,6 +92,7 @@ assets = [
     ["packaging/icono/png/512.png", "usr/share/icons/hicolor/512x512/apps/mx.iurefficient.IureVoz.png", "644"],
     ["packaging/icono/iurevoz.svg", "usr/share/icons/hicolor/scalable/apps/mx.iurefficient.IureVoz.svg", "644"],
     ["README.md", "usr/share/doc/iurevoz/README.md", "644"],
+    ["LICENSE.md", "usr/share/doc/iurevoz/copyright", "644"],
 ]
 
 # `cargo generate-rpm`: paquete para Fedora/openSUSE, con lo mismo que el .deb
@@ -111,4 +112,5 @@ assets = [
     { source = "packaging/icono/png/512.png", dest = "/usr/share/icons/hicolor/512x512/apps/mx.iurefficient.IureVoz.png", mode = "644" },
     { source = "packaging/icono/iurevoz.svg", dest = "/usr/share/icons/hicolor/scalable/apps/mx.iurefficient.IureVoz.svg", mode = "644" },
     { source = "README.md", dest = "/usr/share/doc/iurevoz/README.md", mode = "644", doc = true },
+    { source = "LICENSE.md", dest = "/usr/share/licenses/iurevoz/LICENSE.md", mode = "644", doc = true },
 ]

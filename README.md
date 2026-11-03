@@ -168,3 +168,7 @@ Lección: el texto dictado va delimitado y con la instrucción explícita de no 
 - [x] Voz local: respuestas habladas y lectura de selección o páginas
 - [x] Etapa 2: OpenRouter para comandos y Claude Code (cuenta del usuario) con permiso por acción
 - [ ] Cliente MCP de las apps del suite
+
+## Licencia
+
+[Apache-2.0](LICENSE.md), © Eduardo Llaguno Velasco.
