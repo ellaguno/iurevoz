@@ -3,15 +3,26 @@
 Versiones de IureVoz. El flujo `.github/workflows/release.yml` toma las notas de la
 sección `## vX.Y.Z` al subir la etiqueta.
 
-## Sin publicar
+## v0.3.0 — 2026-11-03
 
 ### Agregado
-- **Versión para Windows** (en pruebas). Teclea con `SendInput`, registra los atajos
+- **Versión para Windows** (alfa). Teclea con `SendInput`, registra los atajos
   Ctrl+Alt+Espacio, Ctrl+Alt+C y Ctrl+Alt+L, pone su ícono junto al reloj, guarda las
   credenciales de la suite en el Administrador de credenciales y descarga el
-  `llama-server` de Windows con Vulkan. El flujo de publicación arma también un
-  instalador y un `.zip`.
+  `llama-server` de Windows con Vulkan. Con el ícono junto al reloj, cerrar la ventana
+  la esconde y IureVoz sigue escuchando.
+- **Instaladores nuevos:** `.rpm` para Fedora y openSUSE, y en Windows un `.exe` que
+  instala para el usuario y un `.msi` para todo el equipo (políticas, Intune), además
+  del `.zip`. La versión publica un `SHA256SUMS`.
+- **Ícono propio**, el que le dibuja iureapps, en la ventana, el menú, las
+  notificaciones, los paquetes y el `.exe`.
+- Se instala y actualiza desde **iureapps** en Linux y en Windows.
 - La voz lee de las rutas de Windows solo el nombre final, como con las de Linux.
+
+### Cambiado
+- **Código abierto** con licencia Apache-2.0.
+- Los paquetes se llaman `IureVoz-<versión>-linux-x64.deb`, `-linux-x64.rpm`,
+  `-windows-x64.exe`, etc.
 
 ## v0.2.2 — 2026-10-23
 
