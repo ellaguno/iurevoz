@@ -1,0 +1,41 @@
+<!--
+  Instalador .msi de IureVoz (WiX 5), para instalar por políticas (GPO, Intune) en todo el
+  equipo. Lo arma el flujo de GitHub Actions desde la raíz del repo:
+    wix build -arch x64 -d Version=X.Y.Z -o target\instalador\IureVoz-X.Y.Z-windows-x64.msi packaging\iurevoz.wxs
+  El de uso diario es el .exe de Inno Setup (iurevoz.iss), que instala sólo para el usuario.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="IureVoz" Manufacturer="Iurefficient" Version="$(var.Version)"
+           UpgradeCode="8E4D2A61-3B7C-4F0E-A95D-2C61B7E04F38" Scope="perMachine"
+           Language="1034" Codepage="1252">
+    <MajorUpgrade DowngradeErrorMessage="Ya hay instalada una versión más nueva de IureVoz." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="iurevoz.ico" SourceFile="packaging\icono\iurevoz.ico" />
+    <Property Id="ARPPRODUCTICON" Value="iurevoz.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/ellaguno/iurevoz" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="IureVoz">
+        <Component>
+          <File Source="target\release\iurevoz.exe" KeyPath="yes" />
+        </Component>
+        <Component>
+          <File Source="README.md" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="AccesoMenu">
+        <!-- el AppUserModelID deja que las notificaciones digan «IureVoz» -->
+        <Shortcut Id="AccesoIureVoz" Name="IureVoz" Target="[INSTALLFOLDER]iurevoz.exe"
+                  WorkingDirectory="INSTALLFOLDER">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="mx.iurefficient.IureVoz" />
+        </Shortcut>
+        <RegistryValue Root="HKMU" Key="Software\Iurefficient\IureVoz" Name="acceso"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+  </Package>
+</Wix>

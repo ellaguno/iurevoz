@@ -672,7 +672,7 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
 
 /// Notificación de escritorio: llega aunque la ventana esté oculta.
 fn notificar(titulo: &str, cuerpo: &str) {
-    crate::plataforma::notificar(titulo, cuerpo, "audio-input-microphone");
+    crate::plataforma::notificar(titulo, cuerpo, crate::config::APP_ID);
 }
 
 /// Corre la tarea con Claude Code en su propio hilo: puede tardar minutos.

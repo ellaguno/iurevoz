@@ -251,6 +251,8 @@ pub fn iniciar(ctl: Controlador) {
             if let Err(e) = bandeja_windows(ctl) {
                 ACTIVA.store(false, Ordering::Relaxed);
                 eprintln!("bandeja: sin ícono ({e})");
+                // sin ícono no habría cómo abrirla: si arrancó escondida, se muestra
+                crate::ui::mostrar_ventana();
             }
         })
         .expect("hilo bandeja");
@@ -380,9 +382,10 @@ pub mod arranque {
             &r,
             format!(
                 "[Desktop Entry]\nType=Application\nName=IureVoz\nComment=Dictado y órdenes por voz\n\
-                 Exec={} --autoarranque\nIcon=audio-input-microphone\nTerminal=false\n\
+                 Exec={} --autoarranque\nIcon={}\nTerminal=false\n\
                  X-GNOME-Autostart-enabled=true\nX-GNOME-Autostart-Delay=5\n",
-                exe.display()
+                exe.display(),
+                crate::config::APP_ID
             ),
         )?;
         Ok(())

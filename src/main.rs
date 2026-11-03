@@ -259,9 +259,18 @@ fn instalar_lanzador() {
     }
     let contenido = format!(
         "[Desktop Entry]\nType=Application\nName=IureVoz\nComment=Dictado por voz local\n\
-         Exec={}\nIcon=audio-input-microphone\nCategories=Utility;Accessibility;\nTerminal=false\n",
-        exe.display()
+         Exec={}\nIcon={}\nCategories=Utility;Accessibility;\nTerminal=false\n",
+        exe.display(),
+        config::APP_ID
     );
+    // el ícono, donde lo busca el tema (el .deb lo pone en /usr/share/icons)
+    if let Some(d) = dirs::data_dir().map(|d| d.join("icons/hicolor/256x256/apps")) {
+        let png = d.join(format!("{}.png", config::APP_ID));
+        if std::fs::read(&png).ok().as_deref() != Some(config::ICONO_PNG) {
+            let _ = std::fs::create_dir_all(&d);
+            let _ = std::fs::write(&png, config::ICONO_PNG);
+        }
+    }
     if std::fs::read_to_string(&ruta).ok().as_deref() != Some(contenido.as_str()) {
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(&ruta, contenido);

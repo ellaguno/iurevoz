@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 pub const APP_ID: &str = "mx.iurefficient.IureVoz";
 
+/// Ícono de la app (el que le dibuja iureapps), para la ventana y el lanzador de desarrollo.
+pub const ICONO_PNG: &[u8] = include_bytes!("../packaging/icono/png/256.png");
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModeloAsr {

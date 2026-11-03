@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- El ícono de IureVoz que dibuja iureapps (src/gui/theme.rs, paint_drawn_icon):
+       fondo azul marino de la suite, la cúpula de Iurefficient y una onda de voz. -->
+  <rect width="512" height="512" rx="112.64" fill="#11284c"/>
+  <path d="M122.88 61.44A133.12 133.12 0 0 0 389.12 61.44Z" fill="#0650ec"/>
+  <g fill="#f6f6f8">
+    <rect x="115.2" y="327.68" width="35.84" height="51.2" rx="17.92"/>
+    <rect x="176.64" y="296.96" width="35.84" height="112.64" rx="17.92"/>
+    <rect x="299.52" y="296.96" width="35.84" height="112.64" rx="17.92"/>
+    <rect x="360.96" y="327.68" width="35.84" height="51.2" rx="17.92"/>
+  </g>
+  <rect x="238.08" y="266.24" width="35.84" height="174.08" rx="17.92" fill="#8b5cf6"/>
+</svg>

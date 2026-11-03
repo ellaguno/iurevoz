@@ -65,6 +65,10 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# ícono de iurevoz.exe (build.rs)
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.34"
+
 # `cargo deb`: paquete para Ubuntu/Debian (los modelos se descargan al primer uso)
 [package.metadata.deb]
 maintainer = "Eduardo Llaguno <eduardo@llaguno.com>"
@@ -78,5 +82,33 @@ local o el que se configure. Requiere GNOME en Wayland (portal RemoteDesktop).""
 assets = [
     ["target/release/iurevoz", "usr/bin/", "755"],
     ["packaging/mx.iurefficient.IureVoz.desktop", "usr/share/applications/", "644"],
+    ["packaging/icono/png/16.png", "usr/share/icons/hicolor/16x16/apps/mx.iurefficient.IureVoz.png", "644"],
+    ["packaging/icono/png/24.png", "usr/share/icons/hicolor/24x24/apps/mx.iurefficient.IureVoz.png", "644"],
+    ["packaging/icono/png/32.png", "usr/share/icons/hicolor/32x32/apps/mx.iurefficient.IureVoz.png", "644"],
+    ["packaging/icono/png/48.png", "usr/share/icons/hicolor/48x48/apps/mx.iurefficient.IureVoz.png", "644"],
+    ["packaging/icono/png/64.png", "usr/share/icons/hicolor/64x64/apps/mx.iurefficient.IureVoz.png", "644"],
+    ["packaging/icono/png/128.png", "usr/share/icons/hicolor/128x128/apps/mx.iurefficient.IureVoz.png", "644"],
+    ["packaging/icono/png/256.png", "usr/share/icons/hicolor/256x256/apps/mx.iurefficient.IureVoz.png", "644"],
+    ["packaging/icono/png/512.png", "usr/share/icons/hicolor/512x512/apps/mx.iurefficient.IureVoz.png", "644"],
+    ["packaging/icono/iurevoz.svg", "usr/share/icons/hicolor/scalable/apps/mx.iurefficient.IureVoz.svg", "644"],
     ["README.md", "usr/share/doc/iurevoz/README.md", "644"],
+]
+
+# `cargo generate-rpm`: paquete para Fedora/openSUSE, con lo mismo que el .deb
+[package.metadata.generate-rpm]
+summary = "Dictado y órdenes por voz, local"
+auto-req = "builtin"
+assets = [
+    { source = "target/release/iurevoz", dest = "/usr/bin/iurevoz", mode = "755" },
+    { source = "packaging/mx.iurefficient.IureVoz.desktop", dest = "/usr/share/applications/mx.iurefficient.IureVoz.desktop", mode = "644" },
+    { source = "packaging/icono/png/16.png", dest = "/usr/share/icons/hicolor/16x16/apps/mx.iurefficient.IureVoz.png", mode = "644" },
+    { source = "packaging/icono/png/24.png", dest = "/usr/share/icons/hicolor/24x24/apps/mx.iurefficient.IureVoz.png", mode = "644" },
+    { source = "packaging/icono/png/32.png", dest = "/usr/share/icons/hicolor/32x32/apps/mx.iurefficient.IureVoz.png", mode = "644" },
+    { source = "packaging/icono/png/48.png", dest = "/usr/share/icons/hicolor/48x48/apps/mx.iurefficient.IureVoz.png", mode = "644" },
+    { source = "packaging/icono/png/64.png", dest = "/usr/share/icons/hicolor/64x64/apps/mx.iurefficient.IureVoz.png", mode = "644" },
+    { source = "packaging/icono/png/128.png", dest = "/usr/share/icons/hicolor/128x128/apps/mx.iurefficient.IureVoz.png", mode = "644" },
+    { source = "packaging/icono/png/256.png", dest = "/usr/share/icons/hicolor/256x256/apps/mx.iurefficient.IureVoz.png", mode = "644" },
+    { source = "packaging/icono/png/512.png", dest = "/usr/share/icons/hicolor/512x512/apps/mx.iurefficient.IureVoz.png", mode = "644" },
+    { source = "packaging/icono/iurevoz.svg", dest = "/usr/share/icons/hicolor/scalable/apps/mx.iurefficient.IureVoz.svg", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/iurevoz/README.md", mode = "644", doc = true },
 ]

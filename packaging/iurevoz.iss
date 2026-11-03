@@ -8,7 +8,8 @@
 #endif
 
 [Setup]
-AppId={{6C2B7F4E-1D3A-4F59-9E0B-6A1F0C8D2E71}
+; iureapps busca la clave de desinstalación por el nombre de la app («IureVoz_is1»)
+AppId=IureVoz
 AppName=IureVoz
 AppVersion={#Version}
 AppPublisher=Iurefficient
@@ -24,6 +25,7 @@ OutputBaseFilename=IureVoz-{#Version}-windows-x64
 Compression=lzma2
 SolidCompression=yes
 UninstallDisplayIcon={app}\iurevoz.exe
+SetupIconFile=icono\iurevoz.ico
 CloseApplications=yes
 
 [Languages]

@@ -877,8 +877,33 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    // corre aunque la ventana esté escondida (en Windows se esconde en vez de destruirse)
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.procesar_eventos();
+        #[cfg(windows)]
+        {
+            // con el ícono, cerrar la esconde: IureVoz sigue escuchando
+            if ctx.input(|i| i.viewport().close_requested())
+                && crate::bandeja::ACTIVA.load(Ordering::Relaxed)
+                && !crate::bandeja::SALIENDO.load(Ordering::Relaxed)
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+            if MOSTRAR.swap(false, Ordering::Relaxed) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            if crate::bandeja::SALIENDO.load(Ordering::Relaxed) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = ctx;
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if ui.input(|i| i.key_pressed(egui::Key::F9)) {
             self.alternar();
         }
@@ -937,6 +962,10 @@ static VENTANA: std::sync::Mutex<Option<egui::Context>> = std::sync::Mutex::new(
 /// Avisos al hilo principal mientras no hay ventana: abrirla (o salir, si `bandeja::SALIENDO`).
 static ABRIR: std::sync::OnceLock<(crossbeam_channel::Sender<()>, crossbeam_channel::Receiver<()>)> = std::sync::OnceLock::new();
 
+/// Windows: pedir que la ventana (escondida o minimizada) se muestre en el siguiente `logic`.
+#[cfg(windows)]
+static MOSTRAR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn canal_abrir() -> &'static (crossbeam_channel::Sender<()>, crossbeam_channel::Receiver<()>) {
     ABRIR.get_or_init(crossbeam_channel::unbounded)
 }
@@ -944,6 +973,15 @@ fn canal_abrir() -> &'static (crossbeam_channel::Sender<()>, crossbeam_channel::
 /// «Mostrar IureVoz» (ícono o un segundo arranque): abre la ventana, o la trae al frente si ya
 /// está (en Wayland GNOME puede responder con el aviso «IureVoz está listo»).
 pub fn mostrar_ventana() {
+    // en Windows la ventana nunca se destruye: se esconde y se vuelve a mostrar
+    #[cfg(windows)]
+    {
+        MOSTRAR.store(true, Ordering::Relaxed);
+        if let Some(ctx) = VENTANA.lock().unwrap().as_ref() {
+            ctx.request_repaint();
+        }
+    }
+    #[cfg(not(windows))]
     if let Some(ctx) = VENTANA.lock().unwrap().as_ref() {
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -967,6 +1005,10 @@ pub fn salir() {
 struct Ventana(std::rc::Rc<std::cell::RefCell<App>>);
 
 impl eframe::App for Ventana {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        eframe::App::logic(&mut *self.0.borrow_mut(), ctx, frame);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         eframe::App::ui(&mut *self.0.borrow_mut(), ui, frame);
     }
@@ -982,7 +1024,8 @@ fn atajos_gnome_instalados() -> bool {
 
 /// Arranca motor, control, voz e ícono y abre la ventana. En Wayland una ventana no se puede
 /// esconder: con el ícono en la barra, cerrarla la destruye y «Mostrar IureVoz» crea otra,
-/// como IureDav. `oculta` (arranque con la sesión) empieza solo con el ícono.
+/// como IureDav. En Windows sí se puede esconder: se crea una sola vez (invisible si es
+/// `oculta`) y cerrarla la esconde. `oculta` (arranque con la sesión) empieza solo con el ícono.
 pub fn ejecutar(cfg: Config, sin_portal: bool, oculta: bool) -> eframe::Result {
     let repintar: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
         if let Some(ctx) = VENTANA.lock().unwrap().as_ref() {
@@ -1052,7 +1095,8 @@ pub fn ejecutar(cfg: Config, sin_portal: bool, oculta: bool) -> eframe::Result {
     crate::bandeja::iniciar(ctl.clone());
     let app = std::rc::Rc::new(std::cell::RefCell::new(App::new(cfg, motor, ctl, rx_ui, portal, voz)));
     let inicio = std::time::Instant::now();
-    let mut abrir = !oculta;
+    // en Windows se crea de una vez, escondida si es el arranque con la sesión
+    let mut abrir = !oculta || cfg!(windows);
     let mut abierta_alguna_vez = false;
     loop {
         if abrir {
@@ -1061,8 +1105,10 @@ pub fn ejecutar(cfg: Config, sin_portal: bool, oculta: bool) -> eframe::Result {
                 viewport: egui::ViewportBuilder::default()
                     .with_title("IureVoz")
                     .with_app_id(crate::config::APP_ID)
+                    .with_icon(Arc::new(eframe::icon_data::from_png_bytes(crate::config::ICONO_PNG).unwrap_or_default()))
                     .with_inner_size([560.0, 640.0])
-                    .with_min_inner_size([380.0, 320.0]),
+                    .with_min_inner_size([380.0, 320.0])
+                    .with_visible(!(oculta && cfg!(windows) && !abierta_alguna_vez)),
                 run_and_return: true,
                 ..Default::default()
             };
