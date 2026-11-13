@@ -9,8 +9,8 @@
 //!
 //! En Linux el llavero se lee y escribe con `secret-tool` (mismo Secret Service y mismos
 //! atributos que el crate `keyring` de iurefficient-connect): así no hace falta libdbus para
-//! compilar. En Windows se usa `keyring` directamente (Administrador de credenciales), con
-//! el mismo servicio y usuario que las demás apps de la suite.
+//! compilar. En Windows y macOS se usa `keyring` directamente (Administrador de credenciales,
+//! Llavero), con el mismo servicio y usuario que las demás apps de la suite.
 
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
@@ -36,12 +36,12 @@ fn usuario(acc: &Account, tipo: &str) -> String {
     format!("{}:{}:{tipo}", acc.host(), acc.email)
 }
 
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 fn leer_secreto(acc: &Account, tipo: &str) -> Option<String> {
     keyring::Entry::new("iurefficient", &usuario(acc, tipo)).ok()?.get_password().ok().filter(|s| !s.is_empty())
 }
 
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 fn guardar_secreto(acc: &Account, tipo: &str, valor: &str) -> Result<()> {
     keyring::Entry::new("iurefficient", &usuario(acc, tipo))?.set_password(valor).context("no pude guardar en el llavero")
 }

@@ -376,7 +376,13 @@ impl App {
 
             ui.label("Escribir en la ventana activa");
             let mut teclear = self.cfg.inyeccion == Inyeccion::Teclear;
-            let como = if cfg!(windows) { "teclear el texto" } else { "teclear el texto (portal de GNOME)" };
+            let como = if cfg!(windows) {
+                "teclear el texto"
+            } else if cfg!(target_os = "macos") {
+                "teclear el texto (permiso de Accesibilidad)"
+            } else {
+                "teclear el texto (portal de GNOME)"
+            };
             if ui.checkbox(&mut teclear, como).changed() {
                 self.cfg.inyeccion = if teclear { Inyeccion::Teclear } else { Inyeccion::Ninguna };
                 cambio = true;
@@ -415,7 +421,13 @@ impl App {
             }
             ui.label("Inicio");
             if ui
-                .checkbox(&mut self.con_la_sesion, if cfg!(windows) { "abrir IureVoz al iniciar la sesión (solo el ícono junto al reloj, sin ventana)" } else { "abrir IureVoz al iniciar la sesión (solo el ícono arriba, sin ventana)" })
+                .checkbox(&mut self.con_la_sesion, if cfg!(windows) {
+                    "abrir IureVoz al iniciar la sesión (solo el ícono junto al reloj, sin ventana)"
+                } else if cfg!(target_os = "macos") {
+                    "abrir IureVoz al iniciar la sesión (solo el ícono en la barra de menús, sin ventana)"
+                } else {
+                    "abrir IureVoz al iniciar la sesión (solo el ícono arriba, sin ventana)"
+                })
                 .changed()
             {
                 if let Err(e) = crate::bandeja::arranque::fijar(self.con_la_sesion) {
@@ -428,7 +440,13 @@ impl App {
             ui.horizontal(|ui| {
                 cambio |= ui
                     .checkbox(&mut self.cfg.registro, "guardar un registro de diagnóstico")
-                    .on_hover_text(if cfg!(windows) { "En %LOCALAPPDATA%\\iurevoz\\iurevoz.log. Incluye lo que dictas y lo que oye el reconocedor; no sale de tu equipo. Vale desde el próximo arranque." } else { "En ~/.local/state/iurevoz/iurevoz.log. Incluye lo que dictas y lo que oye el reconocedor; no sale de tu equipo. Vale desde el próximo arranque." })
+                    .on_hover_text(if cfg!(windows) {
+                        "En %LOCALAPPDATA%\\iurevoz\\iurevoz.log. Incluye lo que dictas y lo que oye el reconocedor; no sale de tu equipo. Vale desde el próximo arranque."
+                    } else if cfg!(target_os = "macos") {
+                        "En ~/Library/Application Support/iurevoz/iurevoz.log. Incluye lo que dictas y lo que oye el reconocedor; no sale de tu equipo. Vale desde el próximo arranque."
+                    } else {
+                        "En ~/.local/state/iurevoz/iurevoz.log. Incluye lo que dictas y lo que oye el reconocedor; no sale de tu equipo. Vale desde el próximo arranque."
+                    })
                     .changed();
                 if self.cfg.registro && ui.small_button("abrir carpeta").clicked() {
                     let dir = dirs::state_dir().or_else(dirs::data_local_dir).unwrap_or_else(crate::config::dir_datos).join("iurevoz");
@@ -852,7 +870,7 @@ impl App {
             match &p.resultado {
                 Some((true, _)) => drop(ui.label(RichText::new("✔ el texto llegó completo").color(Color32::from_rgb(60, 160, 60)))),
                 Some((false, m)) => drop(ui.label(RichText::new(m).color(Color32::from_rgb(200, 80, 80)))),
-                None if p.inicio.is_some() && cfg!(windows) => drop(ui.label("escribiendo…")),
+                None if p.inicio.is_some() && cfg!(any(windows, target_os = "macos")) => drop(ui.label("escribiendo…")),
                 None if p.inicio.is_some() => drop(ui.label("escribiendo… (acepta el permiso de GNOME si aparece)")),
                 None => {}
             }
@@ -899,7 +917,17 @@ impl eframe::App for App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
-        #[cfg(not(windows))]
+        // en macOS, con el ícono, cerrar esconde la app (como ⌘H): un clic en el Dock o en
+        // «Mostrar IureVoz» la trae de vuelta
+        #[cfg(target_os = "macos")]
+        if ctx.input(|i| i.viewport().close_requested())
+            && crate::bandeja::ACTIVA.load(Ordering::Relaxed)
+            && !crate::bandeja::SALIENDO.load(Ordering::Relaxed)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            app_visible(false);
+        }
+        #[cfg(target_os = "linux")]
         let _ = ctx;
     }
 
@@ -981,6 +1009,8 @@ pub fn mostrar_ventana() {
             ctx.request_repaint();
         }
     }
+    #[cfg(target_os = "macos")]
+    app_visible(true);
     #[cfg(not(windows))]
     if let Some(ctx) = VENTANA.lock().unwrap().as_ref() {
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -989,6 +1019,22 @@ pub fn mostrar_ventana() {
     } else {
         let _ = canal_abrir().0.send(());
     }
+}
+
+/// macOS: esconde o muestra la app entera (sus ventanas) desde el hilo principal de AppKit.
+#[cfg(target_os = "macos")]
+fn app_visible(si: bool) {
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        if si {
+            app.unhide(None);
+            #[allow(deprecated)] // `activate` es de macOS 14
+            app.activateIgnoringOtherApps(true);
+        } else {
+            app.hide(None);
+        }
+    });
 }
 
 /// «Salir» del ícono: cierra la ventana (si la hay) y termina.
@@ -1018,13 +1064,13 @@ impl eframe::App for Ventana {
 fn atajos_gnome_instalados() -> bool {
     #[cfg(target_os = "linux")]
     return crate::atajos_gnome::instalados();
-    #[cfg(windows)]
+    #[cfg(not(target_os = "linux"))]
     false
 }
 
 /// Arranca motor, control, voz e ícono y abre la ventana. En Wayland una ventana no se puede
 /// esconder: con el ícono en la barra, cerrarla la destruye y «Mostrar IureVoz» crea otra,
-/// como IureDav. En Windows sí se puede esconder: se crea una sola vez (invisible si es
+/// como IureDav. En Windows y macOS sí se puede esconder: se crea una sola vez (invisible si es
 /// `oculta`) y cerrarla la esconde. `oculta` (arranque con la sesión) empieza solo con el ícono.
 pub fn ejecutar(cfg: Config, sin_portal: bool, oculta: bool) -> eframe::Result {
     let repintar: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
@@ -1095,8 +1141,8 @@ pub fn ejecutar(cfg: Config, sin_portal: bool, oculta: bool) -> eframe::Result {
     crate::bandeja::iniciar(ctl.clone());
     let app = std::rc::Rc::new(std::cell::RefCell::new(App::new(cfg, motor, ctl, rx_ui, portal, voz)));
     let inicio = std::time::Instant::now();
-    // en Windows se crea de una vez, escondida si es el arranque con la sesión
-    let mut abrir = !oculta || cfg!(windows);
+    // en Windows y macOS se crea de una vez, escondida si es el arranque con la sesión
+    let mut abrir = !oculta || cfg!(any(windows, target_os = "macos"));
     let mut abierta_alguna_vez = false;
     loop {
         if abrir {
@@ -1117,12 +1163,20 @@ pub fn ejecutar(cfg: Config, sin_portal: bool, oculta: bool) -> eframe::Result {
                 opciones,
                 Box::new(move |cc| {
                     *VENTANA.lock().unwrap() = Some(cc.egui_ctx.clone());
+                    #[cfg(target_os = "macos")]
+                    if oculta {
+                        app_visible(false);
+                    }
                     Ok(Box::new(Ventana(a)))
                 }),
             )?;
             *VENTANA.lock().unwrap() = None;
             abrir = false;
             abierta_alguna_vez = true;
+            // en macOS la ventana solo se cierra al salir (⌘Q, o «Salir» en el ícono)
+            if cfg!(target_os = "macos") {
+                return Ok(());
+            }
         }
         // sin ícono no habría cómo volver a abrirla: cerrar la ventana es salir
         if crate::bandeja::SALIENDO.load(Ordering::Relaxed) || (abierta_alguna_vez && !crate::bandeja::ACTIVA.load(Ordering::Relaxed)) {

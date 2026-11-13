@@ -38,7 +38,13 @@ No uses markdown ni listas. La persona está en México: moneda en pesos, IVA de
 Si una cuenta es ambigua, haz la interpretación más común y dila en la respuesta. Si la instrucción completa o responde a algo de los mensajes anteriores \
 (p. ej. solo un número tras preguntar «¿de qué cantidad?»), úsala junto con ese contexto. \
 Hoy es {} (para la hora exacta usa hora_fecha).",
-        if cfg!(windows) { "Windows" } else { "Linux (GNOME)" },
+        if cfg!(windows) {
+            "Windows"
+        } else if cfg!(target_os = "macos") {
+            "macOS"
+        } else {
+            "Linux (GNOME)"
+        },
         // solo la fecha: con la hora el prefijo cambiaría cada minuto y no serviría la caché
         esc::hora_fecha().rsplit_once(',').map_or_else(|| esc::hora_fecha(), |(f, _)| f.to_string())
     )
@@ -185,6 +191,13 @@ fn pide_abrir(t: &str) -> bool {
     ["abre", "abrir", "editor", "documento", "archivo"].iter().any(|f| t.contains(f))
 }
 
+/// Descripción de la herramienta «teclas». En macOS ctrl se pulsa como ⌘ (portal_macos.rs).
+const TECLAS: &str = if cfg!(target_os = "macos") {
+    "Pulsa una combinación de teclas en la ventana activa (en esta Mac ctrl es ⌘), p. ej. ctrl+t (nueva pestaña), ctrl+w, ctrl+tab (cambiar de app), ctrl+l, ctrl+q (salir de la app), f11."
+} else {
+    "Pulsa una combinación de teclas en la ventana activa, p. ej. ctrl+t (nueva pestaña), ctrl+w, alt+tab, super, ctrl+l, alt+f4, f11."
+};
+
 fn herramientas(con_claude: bool) -> Value {
     let f = |nombre: &str, desc: &str, props: Value, req: &[&str]| {
         json!({"type": "function", "function": {"name": nombre, "description": desc,
@@ -197,7 +210,7 @@ fn herramientas(con_claude: bool) -> Value {
         f("buscar_web", "Busca algo en internet y abre los resultados en el navegador.", json!({"consulta": s("qué buscar")}), &["consulta"]),
         f("abrir_carpeta", "Abre una carpeta en el gestor de archivos: documentos, descargas, escritorio, imágenes, música, videos, inicio, o una ruta dentro de la carpeta personal.", json!({"nombre": s("carpeta")}), &["nombre"]),
         f("calcular", "Evalúa una expresión aritmética (+ - * / ^ %, paréntesis, sqrt). Devuelve el resultado.", json!({"expresion": s("expresión, p. ej. (25*4)+7")}), &["expresion"]),
-        f("teclas", "Pulsa una combinación de teclas en la ventana activa, p. ej. ctrl+t (nueva pestaña), ctrl+w, alt+tab, super, ctrl+l, alt+f4, f11.", json!({"combinacion": s("teclas unidas con +")}), &["combinacion"]),
+        f("teclas", TECLAS, json!({"combinacion": s("teclas unidas con +")}), &["combinacion"]),
         f("escribir", "Escribe un texto en la ventana activa, como si se tecleara.", json!({"texto": s("texto a escribir")}), &["texto"]),
         f("volumen", "Cambia el volumen del sistema.", json!({"accion": {"type": "string", "enum": ["subir", "bajar", "silenciar", "activar"]}, "cantidad": {"type": "integer", "description": "porcentaje, 10 por omisión"}}), &["accion"]),
         f("hora_fecha", "Da la fecha y hora actuales.", json!({}), &[]),

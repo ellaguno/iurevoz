@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Plantilla del Info.plist de IureVoz.app. release.yml cambia @VERSION@ (la de Cargo.toml)
+     y @BUILD@ (github.run_number). iureapps lee CFBundleShortVersionString para saber qué
+     versión está instalada. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>es</string>
+	<key>CFBundleDisplayName</key>
+	<string>IureVoz</string>
+	<key>CFBundleName</key>
+	<string>IureVoz</string>
+	<key>CFBundleExecutable</key>
+	<string>iurevoz</string>
+	<key>CFBundleIdentifier</key>
+	<string>mx.iurefficient.IureVoz</string>
+	<key>CFBundleIconFile</key>
+	<string>iurevoz</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>IureVoz escucha el micrófono para dictar y recibir instrucciones. El reconocimiento corre en este equipo.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>IureVoz usa AppleScript para mostrar avisos y cambiar el volumen.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© Eduardo Llaguno. Licencia Apache-2.0.</string>
+</dict>
+</plist>

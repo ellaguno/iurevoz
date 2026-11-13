@@ -1,4 +1,4 @@
-//! iurevoz: dictado por voz local para Linux y Windows.
+//! iurevoz: dictado por voz local para Linux, Windows y macOS.
 
 // en Windows, sin ventana de consola al abrirla desde el menú (los subcomandos toman la de
 // la terminal que los lanza)
@@ -26,6 +26,7 @@ mod motor;
 mod normalizar;
 mod plataforma;
 #[cfg_attr(windows, path = "portal_windows.rs")]
+#[cfg_attr(target_os = "macos", path = "portal_macos.rs")]
 mod portal;
 mod procesos;
 mod puntuacion;
@@ -73,6 +74,8 @@ fn main() -> Result<()> {
     if !args.is_empty() && args.iter().all(|a| a != "--autoarranque" && a != "--sin-portal") {
         plataforma::usar_consola_del_padre();
     }
+    #[cfg(target_os = "macos")]
+    plataforma::completar_path();
     match args.first().map(String::as_str) {
         Some("-h" | "--help" | "ayuda") => print!("{AYUDA}"),
         Some(o @ ("alternar" | "leer" | "callar" | "rechazar")) if args.len() == 1 => {
@@ -241,8 +244,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// En Windows el acceso del menú Inicio lo crea el instalador.
-#[cfg(windows)]
+/// En Windows el acceso del menú Inicio lo crea el instalador; en macOS la app es el paquete.
+#[cfg(not(target_os = "linux"))]
 fn instalar_lanzador() {}
 
 /// Los portales identifican a las apps fuera de Flatpak por su archivo .desktop.
@@ -414,7 +417,8 @@ fn probar_vigilia(ruta: &str) -> Result<()> {
 
 /// Registro de diagnóstico (opción de Ajustes o `IUREVOZ_LOG=1`). Abierta desde el menú, la
 /// app no tiene terminal: la salida de error se manda a `~/.local/state/iurevoz/iurevoz.log`
-/// (en Windows, `%LOCALAPPDATA%\iurevoz\iurevoz.log`).
+/// (en Windows, `%LOCALAPPDATA%\iurevoz\iurevoz.log`; en macOS,
+/// `~/Library/Application Support/iurevoz/iurevoz.log`).
 /// Desde una terminal se deja ahí. Lleva lo dictado, así que nunca sale del equipo.
 fn abrir_registro() {
     use std::io::IsTerminal;

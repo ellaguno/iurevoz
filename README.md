@@ -1,26 +1,36 @@
 # iurevoz
 
-Dictado y control del escritorio por voz para Linux, local y solo CPU. Nuevo miembro del suite Iurefficient (todavía en exploración).
+Dictado y control del escritorio por voz para Linux, Windows y macOS, local y solo CPU. Nuevo miembro del suite Iurefficient (todavía en exploración).
 
-## Windows (en pruebas)
+## Windows y macOS (en pruebas)
 
-La misma app compila para Windows 10/11 x64. El instalador (`IureVoz-X.Y.Z-windows-x64.exe`, por usuario y sin permisos de administrador) y un `.zip` portátil salen del flujo de GitHub Actions junto con el `.deb`; *Actions → Release → Run workflow* los compila de cualquier rama sin publicar nada. Lo que cambia respecto a Linux:
+La misma app compila para Windows 10/11 x64 y para macOS 11 o posterior (app universal: Apple Silicon e Intel). Los instaladores salen del flujo de GitHub Actions junto con el `.deb`: en Windows un `.exe` por usuario, un `.msi` para todo el equipo y un `.zip` portátil; en macOS un `.dmg` (se arrastra a Aplicaciones) y un `.app.tar.gz`, el que instala **iureapps**. *Actions → Release → Run workflow* los compila de cualquier rama sin publicar nada. Lo que cambia respecto a Linux:
 
-| | Linux (GNOME) | Windows |
-|---|---|---|
-| Teclear en la ventana activa | portal RemoteDesktop (pide permiso una vez) | `SendInput` con caracteres Unicode: acentos y «ñ» sin teclas muertas, sin permiso |
-| Atajos globales | atajos de GNOME o portal GlobalShortcuts | `RegisterHotKey` al arrancar: Ctrl+Alt+Espacio, Ctrl+Alt+C, Ctrl+Alt+L |
-| Ícono | extensión AppIndicator | área de notificación, junto al reloj |
-| Inicio con la sesión | `~/.config/autostart` | `HKCU\…\CurrentVersion\Run` |
-| Leer la selección | selección primaria (`wl-paste`) | Ctrl+C y se devuelve el portapapeles como estaba |
-| Abrir apps | archivos `.desktop` | accesos del menú Inicio y las apps del sistema (Calculadora, Configuración…) |
-| Volumen | `wpctl` | Core Audio del dispositivo predeterminado |
-| Llavero de la suite | Secret Service (`secret-tool`) | Administrador de credenciales (`keyring`) |
-| Auxiliares (`llama-server`, MCP) | mueren con la app por `PR_SET_PDEATHSIG` | Job Object que los termina al cerrar la app |
-| Socket de control | `$XDG_RUNTIME_DIR/iurevoz.sock` | socket Unix de Windows en `%TEMP%` |
-| Datos y registro | `~/.local/share/iurevoz`, `~/.local/state/iurevoz` | ajustes en `%APPDATA%\iurevoz`; modelos y registro en `%LOCALAPPDATA%\iurevoz` |
+| | Linux (GNOME) | Windows | macOS |
+|---|---|---|---|
+| Teclear en la ventana activa | portal RemoteDesktop (pide permiso una vez) | `SendInput` con caracteres Unicode: acentos y «ñ» sin teclas muertas, sin permiso | `CGEventPost` con caracteres Unicode; pide el permiso de **Accesibilidad** una vez |
+| Atajos globales | atajos de GNOME o portal GlobalShortcuts | `RegisterHotKey` al arrancar: Ctrl+Alt+Espacio, Ctrl+Alt+C, Ctrl+Alt+L | atajos de Carbon al arrancar: ⌃⌥Espacio, ⌃⌥C, ⌃⌥L |
+| Combinaciones del modo comando | tal cual | tal cual | Ctrl se pulsa como ⌘ (Ctrl+T es ⌘T), Alt como ⌥ y Super como ⌃ |
+| Ícono | extensión AppIndicator | área de notificación, junto al reloj | barra de menús |
+| Cerrar la ventana | la destruye; el ícono la vuelve a crear | la esconde | esconde la app (como ⌘H); el Dock o el ícono la traen |
+| Inicio con la sesión | `~/.config/autostart` | `HKCU\…\CurrentVersion\Run` | LaunchAgent en `~/Library/LaunchAgents` |
+| Leer la selección | selección primaria (`wl-paste`) | Ctrl+C y se devuelve el portapapeles como estaba | ⌘C y se devuelve el portapapeles (`pbpaste`/`pbcopy`) |
+| Abrir apps | archivos `.desktop` | accesos del menú Inicio y las apps del sistema (Calculadora, Configuración…) | paquetes `.app` de Aplicaciones, con su nombre en español (Calculadora, Notas…) |
+| Volumen | `wpctl` | Core Audio del dispositivo predeterminado | AppleScript (`osascript`) |
+| Avisos | `notify-send` | Centro de notificaciones | AppleScript (`display notification`) |
+| Llavero de la suite | Secret Service (`secret-tool`) | Administrador de credenciales (`keyring`) | Llavero de macOS (`keyring`) |
+| LLM local | `llama-server` con Vulkan | `llama-server` con Vulkan | `llama-server` con Metal |
+| Auxiliares (`llama-server`, MCP) | mueren con la app por `PR_SET_PDEATHSIG` | Job Object que los termina al cerrar la app | un vigilante (`sh`) los mata cuando la app termina |
+| Socket de control | `$XDG_RUNTIME_DIR/iurevoz.sock` | socket Unix de Windows en `%TEMP%` | `~/Library/Caches/iurevoz.sock` |
+| Datos y registro | `~/.local/share/iurevoz`, `~/.local/state/iurevoz` | ajustes en `%APPDATA%\iurevoz`; modelos y registro en `%LOCALAPPDATA%\iurevoz` | `~/Library/Application Support/iurevoz` |
 
-Pendiente en Windows: el dictado directo a IureEditor por `iureditor://insert` (no hay paquete del que leer su versión; `IUREVOZ_EDITOR_INSERTA=1` lo fuerza) y probarlo en equipos reales. Desde Linux, `cargo check --target x86_64-pc-windows-msvc` sirve para revisar que compile; para enlazar hace falta el MSVC de Windows (o el flujo de Actions).
+Pendiente en Windows y macOS: el dictado directo a IureEditor por `iureditor://insert` (no hay paquete del que leer su versión; `IUREVOZ_EDITOR_INSERTA=1` lo fuerza) y probarlo en equipos reales.
+
+Desde Linux, `cargo check --target x86_64-pc-windows-msvc` (o `aarch64-apple-darwin`) revisa que compile. Algunas dependencias compilan C (`ring`), así que hace falta un compilador para ese sistema; para solo revisar basta uno falso que cree los archivos vacíos (`CC_aarch64_apple_darwin=… AR_aarch64_apple_darwin=…`). Para enlazar hace falta el MSVC de Windows, una Mac o el flujo de Actions.
+
+### Firma en macOS
+
+Con los secrets de Apple en el repositorio (los mismos que usa iureapps; se cargan con su `scripts/apple-secrets.sh` y `REPO=ellaguno/iurevoz`), el flujo firma la app con Developer ID y «hardened runtime» (el micrófono va en `packaging/macos/iurevoz.entitlements`), notariza el `.dmg` y engrapa el ticket en el `.dmg` y en la app. Sin los secrets la firma es «ad hoc»: abre con clic derecho → Abrir (iureapps le quita la cuarentena), pero macOS vuelve a pedir los permisos de micrófono y Accesibilidad en cada versión.
 
 ## Uso
 

@@ -51,7 +51,15 @@ pub fn estado(clave: &str) -> (bool, bool) {
 pub fn preparar(clave: &str, progreso: &dyn Fn(&str, f32)) -> Result<()> {
     std::fs::create_dir_all(dir().join("modelos"))?;
     if !ruta_binario().exists() {
-        let paquete = if cfg!(windows) { "win-vulkan-x64.zip" } else { "ubuntu-vulkan-x64.tar.gz" };
+        let paquete = if cfg!(windows) {
+            "win-vulkan-x64.zip"
+        } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            "macos-arm64.tar.gz"
+        } else if cfg!(target_os = "macos") {
+            "macos-x64.tar.gz"
+        } else {
+            "ubuntu-vulkan-x64.tar.gz"
+        };
         let url = format!("https://github.com/ggml-org/llama.cpp/releases/download/{VERSION}/llama-{VERSION}-bin-{paquete}");
         let tmp = dir().join(".binario.parcial");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -156,14 +164,15 @@ struct Servidor {
 static SERVIDOR: Mutex<Option<Servidor>> = Mutex::new(None);
 
 /// GPU dedicada para Vulkan («Vulkan1: Quadro P1000…»): se evita la integrada, que es
-/// lenta y comparte la RAM. Sin GPU dedicada, todo en CPU.
+/// lenta y comparte la RAM. Sin GPU dedicada, todo en CPU. En una Mac con Apple Silicon la
+/// GPU es Metal («MTL0: Apple M2…») y sí conviene: comparte la memoria, pero es rápida.
 fn elegir_dispositivo(bin: &Path) -> String {
     let out = crate::plataforma::sin_consola(&mut Command::new(bin)).arg("--list-devices").env("LD_LIBRARY_PATH", bin.parent().unwrap()).output();
     let texto = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr)).unwrap_or_default();
     texto
         .lines()
         .filter_map(|l| l.trim().split_once(':'))
-        .filter(|(d, _)| d.starts_with("Vulkan"))
+        .filter(|(d, _)| d.starts_with("Vulkan") || d.starts_with("MTL"))
         .find(|(_, nombre)| {
             let n = nombre.to_lowercase();
             !(n.contains("intel") || n.contains("llvmpipe") || n.contains("software"))

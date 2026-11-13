@@ -319,9 +319,9 @@ pub fn editor_inserta() -> bool {
     version_editor().is_some_and(|v| v > (1, 11, 2))
 }
 
-/// Versión del IureEditor instalado (del paquete), p. ej. (1, 12, 1). En Windows no hay
-/// paquete que consultar.
-#[cfg(windows)]
+/// Versión del IureEditor instalado (del paquete), p. ej. (1, 12, 1). En Windows y macOS no
+/// hay paquete que consultar.
+#[cfg(not(target_os = "linux"))]
 fn version_editor() -> Option<(u32, u32, u32)> {
     None
 }

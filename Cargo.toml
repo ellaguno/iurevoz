@@ -1,8 +1,8 @@
 [package]
 name = "iurevoz"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
-description = "Dictado y órdenes por voz para Linux (GNOME) y Windows, local; parte de la suite Iurefficient"
+description = "Dictado y órdenes por voz para Linux (GNOME), Windows y macOS, local; parte de la suite Iurefficient"
 license = "Apache-2.0"
 authors = ["Eduardo Llaguno <eduardo@llaguno.com>"]
 homepage = "https://github.com/ellaguno/iurevoz"
@@ -37,8 +37,21 @@ ureq = { version = "3.4.2", features = ["json"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "remote_desktop", "screencast", "global_shortcuts"] }
 ksni = { version = "0.3", default-features = false, features = ["tokio"] }
-libc = "0.2.191"
 xkbcommon = { version = "0.9.0", default-features = false }
+
+# Linux y macOS: getrusage y redirigir la salida al registro
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+# macOS: teclear con CGEvent (FFI en portal_macos.rs), atajos de Carbon, ícono en la barra de
+# menús y llavero; NSApplication para esconder y mostrar la ventana
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = "0.3"
+global-hotkey = "0.7"
+keyring = { version = "3", features = ["apple-native"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
+tray-icon = "0.21"
 
 # Windows: SendInput, RegisterHotKey, Job Objects, volumen, portapapeles y avisos con Win32/WinRT
 [target.'cfg(windows)'.dependencies]

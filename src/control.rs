@@ -387,9 +387,12 @@ impl Controlador {
     }
 }
 
-/// En Windows 10+ también hay sockets Unix; queda en el `%TEMP%` del usuario.
+/// En Windows 10+ también hay sockets Unix; queda en el `%TEMP%` del usuario. En macOS, en
+/// `~/Library/Caches`: `$TMPDIR` cambia según quién lance la app (Finder, el LaunchAgent o
+/// una terminal) y dos instancias no se encontrarían.
 pub fn ruta_socket() -> PathBuf {
-    dirs::runtime_dir().unwrap_or_else(std::env::temp_dir).join("iurevoz.sock")
+    let dir = if cfg!(target_os = "macos") { dirs::cache_dir() } else { dirs::runtime_dir() };
+    dir.unwrap_or_else(std::env::temp_dir).join("iurevoz.sock")
 }
 
 /// Palabras que callan a la app mientras habla, sin palabra clave.

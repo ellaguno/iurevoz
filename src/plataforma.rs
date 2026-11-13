@@ -1,13 +1,13 @@
-//! Lo que cambia entre Linux y Windows y no merece un módulo propio: abrir archivos y
+//! Lo que cambia entre Linux, Windows y macOS y no merece un módulo propio: abrir archivos y
 //! enlaces, notificaciones, procesos sin consola, el portapapeles y el volumen.
 
 use std::ffi::OsStr;
 use std::process::Command;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 use anyhow::bail;
 
 /// Abre un archivo, carpeta o URL con la aplicación predeterminada, sin esperar.
@@ -35,6 +35,18 @@ pub fn abrir(que: impl AsRef<OsStr>) -> Result<()> {
     if r.0 as isize <= 32 {
         bail!("Windows no pudo abrir {que} ({})", r.0 as isize);
     }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn abrir(que: impl AsRef<OsStr>) -> Result<()> {
+    Command::new("open")
+        .arg(que.as_ref())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("no pude ejecutar open")?;
     Ok(())
 }
 
@@ -78,6 +90,15 @@ pub fn notificar(titulo: &str, cuerpo: &str, _icono: &str) {
     }
 }
 
+/// En macOS, con `display notification` de AppleScript (sale a nombre del Editor de Scripts).
+#[cfg(target_os = "macos")]
+pub fn notificar(titulo: &str, cuerpo: &str, _icono: &str) {
+    let cuerpo: String = cuerpo.chars().take(300).collect();
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let guion = format!("display notification \"{}\" with title \"{}\"", esc(&cuerpo), esc(titulo));
+    let _ = Command::new("osascript").args(["-e", &guion]).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+}
+
 /// Un programa de consola lanzado desde la ventana no debe abrir otra ventana negra.
 pub fn sin_consola(cmd: &mut Command) -> &mut Command {
     #[cfg(windows)]
@@ -107,7 +128,7 @@ pub fn canonica(p: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
 }
 
 /// ¿Hay un proceso con este nombre exacto? (p. ej. «iureditor» ya abierto)
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn corre(nombre: &str) -> bool {
     Command::new("pgrep").args(["-x", nombre]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
@@ -136,6 +157,105 @@ pub fn claude() -> Command {
     }
     #[cfg(not(windows))]
     Command::new("claude")
+}
+
+// ── macOS ────────────────────────────────────────────────────────────────────
+
+/// Abierta desde Finder, una app recibe un PATH mínimo (`/usr/bin:/bin:/usr/sbin:/sbin`) y no
+/// encontraría `claude` ni lo instalado con Homebrew. Se agregan las carpetas de costumbre.
+/// Va antes de crear hilos: cambiar el entorno con hilos corriendo no es seguro.
+#[cfg(target_os = "macos")]
+pub fn completar_path() {
+    let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    let home = dirs::home_dir().unwrap_or_default();
+    for d in [home.join(".local/bin"), home.join(".claude/local"), "/opt/homebrew/bin".into(), "/usr/local/bin".into()] {
+        if d.is_dir() && !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    if let Ok(p) = std::env::join_paths(dirs) {
+        unsafe { std::env::set_var("PATH", p) };
+    }
+}
+
+/// `pbpaste` y `pbcopy` hablan en la codificación del entorno: se pide UTF-8.
+#[cfg(target_os = "macos")]
+fn pb(prog: &str) -> Command {
+    let mut c = Command::new(prog);
+    c.env("LANG", "es_MX.UTF-8").env("LC_ALL", "es_MX.UTF-8");
+    c
+}
+
+/// Texto del portapapeles de macOS.
+#[cfg(target_os = "macos")]
+pub fn leer_portapapeles() -> Option<String> {
+    let out = pb("pbpaste").stderr(Stdio::null()).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Deja `texto` en el portapapeles (para devolver lo que había antes de copiar la selección).
+#[cfg(target_os = "macos")]
+pub fn escribir_portapapeles(texto: &str) {
+    use std::io::Write;
+    let Ok(mut hijo) = pb("pbcopy").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else { return };
+    if let Some(mut e) = hijo.stdin.take() {
+        let _ = e.write_all(texto.as_bytes());
+    }
+    let _ = hijo.wait();
+}
+
+/// Volumen de la salida con AppleScript. `subir` en fracción (0.1 = 10 %).
+#[cfg(target_os = "macos")]
+pub fn volumen(subir: Option<f32>, silenciar: Option<bool>) -> Result<()> {
+    let mut guion = String::new();
+    if let Some(d) = subir {
+        let d = (d * 100.0).round() as i32;
+        guion.push_str(&format!("set v to (output volume of (get volume settings)) + ({d})\n"));
+        guion.push_str("if v < 0 then set v to 0\nif v > 100 then set v to 100\nset volume output volume v\n");
+        if d > 0 {
+            guion.push_str("set volume without output muted\n");
+        }
+    }
+    if let Some(m) = silenciar {
+        guion.push_str(if m { "set volume with output muted\n" } else { "set volume without output muted\n" });
+    }
+    let out = Command::new("osascript").args(["-e", &guion]).output().context("no pude ejecutar osascript")?;
+    if !out.status.success() {
+        bail!("osascript: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
+}
+
+/// Apps de macOS (los paquetes `.app` de las carpetas de Aplicaciones): (nombre, ruta).
+#[cfg(target_os = "macos")]
+pub fn paquetes_de_aplicaciones() -> Vec<(String, std::path::PathBuf)> {
+    let mut raices: Vec<std::path::PathBuf> =
+        ["/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities"].map(Into::into).to_vec();
+    if let Some(h) = dirs::home_dir() {
+        raices.insert(0, h.join("Applications"));
+    }
+    let mut v = Vec::new();
+    for d in raices {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "app") {
+                let nombre = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                v.push((nombre, p));
+            } else if p.is_dir() && d.starts_with("/Applications") && !p.ends_with("Utilities") {
+                // carpetas como «Microsoft Office» o «Adobe …» traen sus apps adentro
+                if let Ok(sub) = std::fs::read_dir(&p) {
+                    for e in sub.flatten() {
+                        let q = e.path();
+                        if q.extension().is_some_and(|x| x == "app") {
+                            v.push((q.file_stem().unwrap_or_default().to_string_lossy().into_owned(), q));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    v
 }
 
 // ── Windows ──────────────────────────────────────────────────────────────────
@@ -179,7 +299,7 @@ pub fn cpu_del_proceso() -> f64 {
     s(k) + s(u)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn cpu_del_proceso() -> f64 {
     let mut u = unsafe { std::mem::zeroed::<libc::rusage>() };
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
@@ -254,9 +374,9 @@ fn abrir_portapapeles(abrir: impl Fn() -> bool) -> Option<()> {
     None
 }
 
-/// Texto seleccionado en la ventana activa: Windows no tiene selección primaria, así que se
-/// copia con Ctrl+C y se devuelve el portapapeles como estaba.
-#[cfg(windows)]
+/// Texto seleccionado en la ventana activa: Windows y macOS no tienen selección primaria, así
+/// que se copia con Ctrl+C (⌘C en Mac) y se devuelve el portapapeles como estaba.
+#[cfg(not(target_os = "linux"))]
 pub fn seleccion() -> Result<String> {
     let antes = leer_portapapeles();
     // marca para saber si Ctrl+C copió algo

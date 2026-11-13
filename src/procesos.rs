@@ -5,7 +5,8 @@
 //! hilo. Por eso todos se lanzan desde un hilo que vive lo mismo que la app.
 //!
 //! En Windows van a un Job Object que los termina cuando se cierra su último handle, es
-//! decir, cuando la app termina por la razón que sea.
+//! decir, cuando la app termina por la razón que sea. macOS no tiene ninguno de los dos: un
+//! vigilante (`sh`) espera a que la app termine y entonces mata al proceso.
 
 use std::process::{Child, Command};
 #[cfg(target_os = "linux")]
@@ -64,6 +65,22 @@ pub fn lanzar(mut cmd: Command) -> std::io::Result<Child> {
         if let Err(e) = unsafe { AssignProcessToJobObject(HANDLE(t as _), HANDLE(hijo.as_raw_handle())) } {
             eprintln!("job object: {e}");
         }
+    }
+    Ok(hijo)
+}
+
+/// Lanza `cmd` ligado a la vida de la app: si la app muere (incluso con ⌘Q o un cierre
+/// forzado), el vigilante le manda SIGKILL.
+#[cfg(target_os = "macos")]
+pub fn lanzar(mut cmd: Command) -> std::io::Result<Child> {
+    use std::process::Stdio;
+    let hijo = cmd.spawn()?;
+    let (app, h) = (std::process::id(), hijo.id());
+    // si el proceso termina antes (p. ej. al cambiar de modelo), el vigilante también
+    let guion = format!("while kill -0 {app} 2>/dev/null && kill -0 {h} 2>/dev/null; do sleep 2; done; kill -0 {app} 2>/dev/null || kill -9 {h} 2>/dev/null");
+    if let Ok(mut v) = Command::new("/bin/sh").args(["-c", &guion]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        // se recoge al terminar para que no quede como zombi
+        std::thread::spawn(move || v.wait());
     }
     Ok(hijo)
 }

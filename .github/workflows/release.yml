@@ -1,10 +1,17 @@
 # Al subir una etiqueta vX.Y.Z: compila el .deb y el .rpm en Ubuntu 24.04 (glibc 2.39, para
-# que instalen también en sistemas no tan nuevos) y los instaladores de Windows (.exe de Inno
-# Setup para el usuario y .msi de WiX para todo el equipo), y publica la versión con las notas
-# de la sección `## vX.Y.Z` del CHANGELOG y un SHA256SUMS.
+# que instalen también en sistemas no tan nuevos), los instaladores de Windows (.exe de Inno
+# Setup para el usuario y .msi de WiX para todo el equipo) y la app de macOS (universal, en un
+# .dmg y en un .app.tar.gz), y publica la versión con las notas de la sección `## vX.Y.Z` del
+# CHANGELOG y un SHA256SUMS.
 #
 # Los nombres siguen el esquema que entiende iureapps (`IureVoz-<ver>-linux-x64.deb`,
-# `-linux-x64.rpm`, `-windows-x64.exe`): si se cambian, hay que cambiar su catálogo.
+# `-linux-x64.rpm`, `-windows-x64.exe`, `-macos-universal.app.tar.gz`): si se cambian, hay que
+# cambiar su catálogo.
+#
+# macOS: con los secrets de Apple (los mismos que iureapps; se cargan con su
+# `scripts/apple-secrets.sh` y `REPO=ellaguno/iurevoz`) la app se firma con Developer ID y se
+# notariza; sin ellos se firma «ad hoc» y avisa: abre con clic derecho → Abrir (o instalada
+# con iureapps), pero macOS vuelve a pedir los permisos en cada versión.
 #
 # A mano (Actions → Release → Run workflow) compila todo sin publicar nada: los
 # paquetes quedan como artefactos de la ejecución, para probar una rama.
@@ -89,9 +96,148 @@ jobs:
           name: windows
           path: target/instalador/*
 
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 160
+    env:
+      APP: IureVoz.app
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compilar (arm64 + x86_64) y unir con lipo
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p build
+          lipo -create -output build/iurevoz \
+            target/aarch64-apple-darwin/release/iurevoz target/x86_64-apple-darwin/release/iurevoz
+          lipo -info build/iurevoz
+
+      - name: Pruebas
+        run: cargo test --release --locked --target aarch64-apple-darwin
+
+      - name: Armar IureVoz.app
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          app="build/$APP"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp build/iurevoz "$app/Contents/MacOS/iurevoz"
+          sed -e "s/@VERSION@/$v/" -e "s/@BUILD@/${{ github.run_number }}/" \
+            packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          printf 'APPL????' > "$app/Contents/PkgInfo"
+          plutil -lint "$app/Contents/Info.plist"
+          cp packaging/macos/iurevoz.icns "$app/Contents/Resources/iurevoz.icns"
+          cp README.md LICENSE.md "$app/Contents/Resources/"
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Llavero temporal con el certificado Developer ID
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          for v in P12_BASE64 P12_PASSWORD KEYCHAIN_PASSWORD TEAM_ID ASC_PRIVATE_KEY ASC_KEY_ID ASC_ISSUER_ID; do
+            if [[ -z "${!v}" ]]; then
+              echo "::warning::Falta el secret de $v: la app se firma «ad hoc», sin notarizar"
+              exit 0
+            fi
+          done
+          kc="$RUNNER_TEMP/firma.keychain-db"
+          p12="$RUNNER_TEMP/devid.p12"
+          printf '%s' "$P12_BASE64" | base64 --decode > "$p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$kc"
+          security import "$p12" -k "$kc" -P "$P12_PASSWORD" -f pkcs12 \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$p12"
+          # intermedio de Developer ID (G2), por si el runner no lo trae
+          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/g2.cer"
+          security import "$RUNNER_TEMP/g2.cer" -k "$kc" 2>/dev/null || true
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$kc" >/dev/null
+          # shellcheck disable=SC2046  # una ruta por llavero
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$kc" |
+            grep "Developer ID Application" | grep "($TEAM_ID)" | head -1 | awk '{print $2}')
+          [[ -n "$identity" ]] || { security find-identity -v -p codesigning "$kc"; echo "::error::No hay identidad Developer ID Application del equipo"; exit 1; }
+          key="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          printf '%s\n' "$ASC_PRIVATE_KEY" > "$key"
+          chmod 600 "$key"
+          {
+            echo "KEYCHAIN=$kc"
+            echo "IDENTITY=$identity"
+            echo "ASC_KEY_PATH=$key"
+            echo "ASC_KEY_ID=$ASC_KEY_ID"
+            echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Firmar la app
+        run: |
+          if [[ -n "${IDENTITY:-}" ]]; then
+            # Developer ID con «hardened runtime»: el micrófono va en los entitlements
+            codesign --force --options runtime --timestamp --keychain "$KEYCHAIN" --sign "$IDENTITY" \
+              --entitlements packaging/macos/iurevoz.entitlements "build/$APP"
+          else
+            codesign --force --sign - --entitlements packaging/macos/iurevoz.entitlements "build/$APP"
+          fi
+          codesign --verify --strict --deep --verbose=2 "build/$APP"
+          codesign -dvv "build/$APP" 2>&1 | grep -E 'Identifier|Authority|TeamIdentifier|flags|Timestamp' || true
+
+      - name: .dmg (firmado y notarizado, si hay secrets) y .app.tar.gz
+        run: |
+          mkdir -p dist build/dmg
+          dmg="dist/IureVoz-$VERSION-macos-universal.dmg"
+          ditto "build/$APP" "build/dmg/$APP"
+          ln -s /Applications build/dmg/Applications
+          hdiutil create -volname "IureVoz $VERSION" -srcfolder build/dmg -fs HFS+ -format UDZO -ov "$dmg"
+          if [[ -n "${IDENTITY:-}" ]]; then
+            codesign --force --timestamp --keychain "$KEYCHAIN" --sign "$IDENTITY" "$dmg"
+            # un solo envío: el ticket del .dmg cubre también la app que lleva dentro
+            out=$(xcrun notarytool submit "$dmg" --key "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" \
+              --issuer "$ASC_ISSUER_ID" --wait --timeout 2h --output-format json) || true
+            echo "$out"
+            id=$(echo "$out" | plutil -extract id raw -o - - 2>/dev/null || true)
+            status=$(echo "$out" | plutil -extract status raw -o - - 2>/dev/null || true)
+            if [[ "$status" != Accepted ]]; then
+              [[ -n "$id" ]] && xcrun notarytool log "$id" --key "$ASC_KEY_PATH" \
+                --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+              echo "::error::Notarización del .dmg: ${status:-sin respuesta de Apple (envío $id)}"
+              exit 1
+            fi
+            xcrun stapler staple "$dmg"
+            # la app suelta (la que instala iureapps) lleva su propio ticket
+            xcrun stapler staple "build/$APP"
+            spctl --assess --type execute --verbose=4 "build/$APP"
+          fi
+          # sin metadatos de Finder (._*): iureapps la extrae con tar
+          COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "dist/IureVoz-$VERSION-macos-universal.app.tar.gz" -C build "$APP"
+          ls -la dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: dist/*
+
+      - name: Limpiar llavero y llave
+        if: always()
+        run: |
+          [[ -n "${KEYCHAIN:-}" ]] && security delete-keychain "$KEYCHAIN" || true
+          rm -f "$RUNNER_TEMP"/AuthKey_*.p8 "$RUNNER_TEMP"/devid.p12
+
   publicar:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, windows]
+    needs: [linux, windows, macos]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

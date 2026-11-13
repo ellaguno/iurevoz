@@ -98,10 +98,10 @@ fn traducir(dominio: &str, texto: &str) -> Option<String> {
 
 /// Nombres comunes en español → palabras que aparecen en los .desktop.
 const SINONIMOS: &[(&str, &[&str])] = &[
-    ("navegador", &["browser", "web", "firefox", "chrome", "chromium", "edge"]),
-    ("archivos", &["files", "nautilus", "file manager", "explorador"]),
+    ("navegador", &["browser", "web", "firefox", "chrome", "chromium", "edge", "safari"]),
+    ("archivos", &["files", "nautilus", "file manager", "explorador", "finder"]),
     ("explorador de archivos", &["files", "nautilus", "explorador"]),
-    ("editor de texto", &["text editor", "gedit", "editor", "bloc de notas"]),
+    ("editor de texto", &["text editor", "gedit", "editor", "bloc de notas", "textedit"]),
     ("terminal", &["terminal", "console", "ptyxis", "simbolo del sistema", "powershell"]),
     ("configuracion", &["settings", "ajustes"]),
     ("ajustes", &["settings", "configuracion"]),
@@ -112,11 +112,11 @@ const SINONIMOS: &[(&str, &[&str])] = &[
     ("calendario", &["calendar"]),
     ("reloj", &["clocks"]),
     ("captura de pantalla", &["screenshot"]),
-    ("hoja de calculo", &["calc", "spreadsheet"]),
-    ("procesador de textos", &["writer", "word processor"]),
-    ("excel", &["calc", "spreadsheet", "hoja de calculo"]),
-    ("word", &["writer", "word processor"]),
-    ("powerpoint", &["impress", "presentation"]),
+    ("hoja de calculo", &["calc", "spreadsheet", "numbers"]),
+    ("procesador de textos", &["writer", "word processor", "pages"]),
+    ("excel", &["calc", "spreadsheet", "hoja de calculo", "numbers"]),
+    ("word", &["writer", "word processor", "pages"]),
+    ("powerpoint", &["impress", "presentation", "keynote"]),
 ];
 
 /// Índice de aplicaciones, armado una vez por proceso (gettext es lento).
@@ -158,6 +158,54 @@ fn aplicaciones() -> Vec<App> {
             c.extend(claves.iter().map(|k| normalizar(k)));
             v.push(App { ruta: PathBuf::from(orden), nombre: nombre.to_string(), claves: c });
         }
+    }
+    v
+}
+
+/// Apps de macOS: el paquete se llama en inglés («Calculator.app») y Finder muestra el nombre
+/// traducido. (nombre en español, paquete, otras claves)
+#[cfg(target_os = "macos")]
+const APPS_MAC: &[(&str, &str, &[&str])] = &[
+    ("Calculadora", "Calculator", &[]),
+    ("Ajustes del Sistema", "System Settings", &["configuracion", "ajustes", "preferencias del sistema"]),
+    ("Preferencias del Sistema", "System Preferences", &["configuracion", "ajustes"]),
+    ("Notas", "Notes", &[]),
+    ("Recordatorios", "Reminders", &["tareas"]),
+    ("Calendario", "Calendar", &[]),
+    ("Contactos", "Contacts", &[]),
+    ("Mapas", "Maps", &[]),
+    ("Fotos", "Photos", &["imagenes"]),
+    ("Música", "Music", &[]),
+    ("Mensajes", "Messages", &[]),
+    ("Correo", "Mail", &["email"]),
+    ("Vista Previa", "Preview", &["visor de imagenes", "pdf"]),
+    ("TextEdit", "TextEdit", &["editor de texto", "bloc de notas"]),
+    ("Terminal", "Terminal", &["consola"]),
+    ("Monitor de Actividad", "Activity Monitor", &["administrador de tareas"]),
+    ("Captura de Pantalla", "Screenshot", &["captura de pantalla"]),
+    ("Libros", "Books", &[]),
+    ("Reloj", "Clock", &["alarmas"]),
+    ("Finder", "Finder", &["archivos", "explorador de archivos", "explorador"]),
+];
+
+#[cfg(target_os = "macos")]
+fn aplicaciones() -> Vec<App> {
+    let mut paquetes = crate::plataforma::paquetes_de_aplicaciones();
+    paquetes.push(("Finder".into(), PathBuf::from("/System/Library/CoreServices/Finder.app")));
+    let mut v: Vec<App> = Vec::new();
+    for (paquete, ruta) in paquetes {
+        // la primera ruta gana (~/Applications tapa a /Applications)
+        if v.iter().any(|x| x.ruta.file_name() == ruta.file_name()) {
+            continue;
+        }
+        let mut claves = vec![normalizar(&paquete)];
+        let mut nombre = paquete.clone();
+        if let Some((es, _, otras)) = APPS_MAC.iter().find(|(_, p, _)| *p == paquete) {
+            nombre = es.to_string();
+            claves.insert(0, normalizar(es));
+            claves.extend(otras.iter().map(|k| normalizar(k)));
+        }
+        v.push(App { ruta, nombre, claves });
     }
     v
 }
@@ -216,7 +264,7 @@ pub fn abrir_aplicacion(nombre: &str) -> Result<String> {
     };
     #[cfg(target_os = "linux")]
     lanzar("gio", &["launch".as_ref(), a.ruta.as_os_str()])?;
-    #[cfg(windows)]
+    #[cfg(not(target_os = "linux"))]
     crate::plataforma::abrir(&a.ruta)?;
     Ok(format!("abrí {}", a.nombre))
 }
@@ -376,7 +424,7 @@ pub fn combinacion(c: &str) -> Result<Vec<u32>> {
 
 // ── sistema ──────────────────────────────────────────────────────────────────
 
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 pub fn volumen(accion: &str, cantidad: Option<u32>) -> Result<String> {
     let paso = cantidad.unwrap_or(10).clamp(1, 50);
     let d = paso as f32 / 100.0;
@@ -429,7 +477,7 @@ pub fn hora_fecha() -> String {
 
 // ── lectura ──────────────────────────────────────────────────────────────────
 
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 pub use crate::plataforma::seleccion;
 
 /// Texto seleccionado (selección primaria); si no hay, el portapapeles.

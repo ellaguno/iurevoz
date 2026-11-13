@@ -1,5 +1,5 @@
 //! Ícono en la barra superior de GNOME (StatusNotifierItem; lo muestra la extensión
-//! AppIndicator de Ubuntu) o en el área de notificación de Windows. El color dice qué hace
+//! AppIndicator de Ubuntu), en el área de notificación de Windows o en la barra de menús de macOS. El color dice qué hace
 //! IureVoz: gris inactivo, verde con la oreja abierta a «oye compu», rojo dictando y azul
 //! escuchando una instrucción.
 //!
@@ -317,6 +317,138 @@ fn bandeja_windows(ctl: Controlador) -> anyhow::Result<()> {
             oir.set_checked(ahora.1);
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// macOS: AppKit exige crear y cambiar el ícono en el hilo principal (el del bucle de eventos
+/// de la ventana), así que vive allí; este hilo atiende el menú y le manda los cambios.
+#[cfg(target_os = "macos")]
+pub fn iniciar(ctl: Controlador) {
+    use std::cell::RefCell;
+    use tray_icon::TrayIconBuilder;
+    use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+
+    struct Icono {
+        tray: tray_icon::TrayIcon,
+        estado: MenuItem,
+        dictar: MenuItem,
+        oir: CheckMenuItem,
+    }
+    thread_local! {
+        static ICONO: RefCell<Option<Icono>> = const { RefCell::new(None) };
+    }
+    // macOS pide RGBA; el dibujo es ARGB (36 px: 18 puntos en pantallas Retina)
+    let imagen = |m: Modo| -> anyhow::Result<tray_icon::Icon> {
+        let i = icono(m, 36);
+        let rgba = i.data.chunks(4).flat_map(|p| [p[1], p[2], p[3], p[0]]).collect();
+        Ok(tray_icon::Icon::from_rgba(rgba, i.width as u32, i.height as u32)?)
+    };
+    let crear = move || -> anyhow::Result<Icono> {
+        let estado = MenuItem::with_id("estado", Modo::Inactivo.texto(), false, None);
+        let dictar = MenuItem::with_id("dictar", "Dictar", true, None);
+        let oir = CheckMenuItem::with_id("oir", "Escuchar «oye compu»", true, false, None);
+        let menu = Menu::new();
+        menu.append_items(&[
+            &estado,
+            &PredefinedMenuItem::separator(),
+            &MenuItem::with_id("mostrar", "Mostrar IureVoz", true, None),
+            &dictar,
+            &oir,
+            &PredefinedMenuItem::separator(),
+            &MenuItem::with_id("salir", "Salir de IureVoz", true, None),
+        ])?;
+        let tray = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("IureVoz").with_icon(imagen(Modo::Inactivo)?).build()?;
+        Ok(Icono { tray, estado, dictar, oir })
+    };
+    ACTIVA.store(true, Ordering::Relaxed);
+    dispatch2::DispatchQueue::main().exec_async(move || match crear() {
+        Ok(i) => ICONO.with(|c| *c.borrow_mut() = Some(i)),
+        Err(e) => {
+            ACTIVA.store(false, Ordering::Relaxed);
+            eprintln!("bandeja: sin ícono ({e})");
+            crate::ui::mostrar_ventana();
+        }
+    });
+    std::thread::Builder::new()
+        .name("bandeja".into())
+        .spawn(move || {
+            let mut antes = None;
+            loop {
+                while let Ok(ev) = MenuEvent::receiver().recv_timeout(Duration::from_millis(250)) {
+                    match ev.id.0.as_str() {
+                        "mostrar" => crate::ui::mostrar_ventana(),
+                        "dictar" => ctl.enviar(Control::Dictar(Modo::de(&ctl) != Modo::Dictando)),
+                        "oir" => ctl.enviar(Control::Vigilia(!ctl.estado.vigilia.load(Ordering::Relaxed))),
+                        "salir" => salir(),
+                        _ => {}
+                    }
+                }
+                let ahora = (Modo::de(&ctl), ctl.estado.vigilia.load(Ordering::Relaxed));
+                if antes != Some(ahora) {
+                    antes = Some(ahora);
+                    dispatch2::DispatchQueue::main().exec_async(move || {
+                        ICONO.with(|c| {
+                            if let Some(i) = c.borrow().as_ref() {
+                                if let Ok(img) = imagen(ahora.0) {
+                                    let _ = i.tray.set_icon(Some(img));
+                                }
+                                let _ = i.tray.set_tooltip(Some(format!("IureVoz · {}", ahora.0.texto())));
+                                i.estado.set_text(ahora.0.texto());
+                                i.dictar.set_text(if ahora.0 == Modo::Dictando { "Detener el dictado" } else { "Dictar" });
+                                i.oir.set_checked(ahora.1);
+                            }
+                        })
+                    });
+                }
+            }
+        })
+        .expect("hilo bandeja");
+}
+
+/// Arranque con la sesión, en macOS: un LaunchAgent del usuario
+/// (`~/Library/LaunchAgents/mx.iurefficient.IureVoz.plist`).
+#[cfg(target_os = "macos")]
+pub mod arranque {
+    use std::path::PathBuf;
+
+    fn ruta() -> Option<PathBuf> {
+        dirs::home_dir().map(|d| d.join("Library/LaunchAgents").join(format!("{}.plist", crate::config::APP_ID)))
+    }
+
+    pub fn activo() -> bool {
+        ruta().is_some_and(|r| r.exists())
+    }
+
+    /// Crea o quita el agente. Arranca sin ventana, solo con el ícono (`--autoarranque`).
+    pub fn fijar(si: bool) -> anyhow::Result<()> {
+        let r = ruta().ok_or_else(|| anyhow::anyhow!("no encuentro la carpeta personal"))?;
+        if !si {
+            if r.exists() {
+                std::fs::remove_file(&r)?;
+            }
+            return Ok(());
+        }
+        let exe = std::env::current_exe()?;
+        let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        if let Some(d) = r.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::write(
+            &r,
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+                 <plist version=\"1.0\">\n<dict>\n\
+                 \t<key>Label</key>\n\t<string>{}</string>\n\
+                 \t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>{}</string>\n\t\t<string>--autoarranque</string>\n\t</array>\n\
+                 \t<key>RunAtLoad</key>\n\t<true/>\n\
+                 \t<key>ProcessType</key>\n\t<string>Interactive</string>\n\
+                 </dict>\n</plist>\n",
+                crate::config::APP_ID,
+                esc(&exe.to_string_lossy())
+            ),
+        )?;
+        Ok(())
     }
 }
 

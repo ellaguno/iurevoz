@@ -3,6 +3,19 @@
 Versiones de IureVoz. El flujo `.github/workflows/release.yml` toma las notas de la
 sección `## vX.Y.Z` al subir la etiqueta.
 
+## v0.4.0 — 2026-11-13
+
+### Agregado
+- **Versión para macOS** (alfa), universal para Apple Silicon e Intel, macOS 11 o
+  posterior. Teclea con eventos de Quartz (pide el permiso de Accesibilidad una vez),
+  registra los atajos ⌃⌥Espacio, ⌃⌥C y ⌃⌥L, pone su ícono en la barra de menús, guarda
+  las credenciales de la suite en el Llavero, abre las apps por su nombre en español y
+  descarga el `llama-server` de Mac, que usa la GPU con Metal. Cerrar la ventana esconde
+  la app y IureVoz sigue escuchando. En el modo comando, Ctrl se pulsa como ⌘.
+- **Instaladores de macOS:** `IureVoz-<versión>-macos-universal.dmg` (se arrastra a
+  Aplicaciones) y `-macos-universal.app.tar.gz`, el que usa **iureapps** para
+  instalarla, abrirla y desinstalarla en la Mac.
+
 ## v0.3.0 — 2026-11-03
 
 ### Agregado
