@@ -65,6 +65,8 @@ Uso:
                                 piper-daniela, kokoro-dora, kokoro-alex, supertonic)
   iurevoz normalizar [\"texto\"]  muestra el texto como lo leerá la voz (sin texto: una línea por
                                 línea de la entrada estándar)
+  iurevoz inicio [si|no]        muestra (o cambia) si IureVoz se abre al iniciar la sesión
+  iurevoz --version             muestra la versión
   iurevoz --sin-portal          abre la ventana sin teclear ni atajo global
 ";
 
@@ -78,6 +80,19 @@ fn main() -> Result<()> {
     plataforma::completar_path();
     match args.first().map(String::as_str) {
         Some("-h" | "--help" | "ayuda") => print!("{AYUDA}"),
+        Some("-V" | "--version") => println!("iurevoz {}", env!("CARGO_PKG_VERSION")),
+        Some("inicio") => {
+            match args.get(1).map(String::as_str) {
+                Some("si" | "sí") => bandeja::arranque::fijar(true)?,
+                Some("no") => bandeja::arranque::fijar(false)?,
+                Some(otro) => bail!("inicio: «{otro}» no es «si» ni «no»"),
+                None => {}
+            }
+            #[cfg(windows)]
+            println!("{}", bandeja::arranque::describir());
+            #[cfg(not(windows))]
+            println!("{}", if bandeja::arranque::activo() { "activo" } else { "inactivo" });
+        }
         Some(o @ ("alternar" | "leer" | "callar" | "rechazar")) if args.len() == 1 => {
             if !control::enviar_a_instancia(o) {
                 bail!("iurevoz no está abierto");
@@ -220,7 +235,9 @@ fn main() -> Result<()> {
         }
         Some(otro) if !otro.starts_with("--") => bail!("subcomando desconocido: {otro} (ver iurevoz --help)"),
         _ => {
-            let autoarranque = args.iter().any(|a| a == "--autoarranque");
+            // `--autoarranque` lo ponen la clave Run, el LaunchAgent y el .desktop; la StartupTask
+            // del paquete MSIX no lleva argumentos, así que se pregunta a Windows cómo se abrió
+            let autoarranque = args.iter().any(|a| a == "--autoarranque") || plataforma::abierta_por_startup_task();
             // ya hay una abierta: el segundo arranque (desde el menú) muestra su ventana; el de la
             // sesión no hace nada
             if autoarranque && control::instancia_abierta() {

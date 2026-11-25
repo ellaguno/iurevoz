@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paquete MSIX de IureVoz para Microsoft Store. release.yml sustituye los @…@:
+    @IDENTITY_NAME@, @PUBLISHER@, @PUBLISHER_DISPLAY_NAME@: los de Partner Center
+      (Administración de productos → Identidad del producto), en las variables del repo
+      MSIX_IDENTITY_NAME, MSIX_PUBLISHER y MSIX_PUBLISHER_DISPLAY_NAME.
+    @VERSION@: la de Cargo.toml con el primer número más 1 y el cuarto en 0 (0.4.0 → 1.4.0.0).
+
+  El DisplayName tiene que ser exactamente el nombre reservado en Partner Center («IureVoz»).
+
+  Sin unvirtualizedResources: lo que la app escribe en AppData (config.toml, modelos, el
+  registro) queda dentro del paquete y se borra al desinstalarla, que es lo esperado.
+  El arranque con la sesión es la StartupTask «IureVozInicio» (apagada hasta que el usuario la
+  activa en Ajustes → Inicio, o en Configuración de Windows → Aplicaciones → Inicio); la clave
+  Run de HKCU no sirve dentro de un paquete.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 desktop rescap">
+
+  <Identity
+    Name="@IDENTITY_NAME@"
+    Publisher="@PUBLISHER@"
+    Version="@VERSION@"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>IureVoz</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_DISPLAY_NAME@</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="es-MX" />
+  </Resources>
+
+  <Applications>
+    <Application Id="IureVoz" Executable="iurevoz.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="IureVoz"
+        Description="Dictado y órdenes por voz en cualquier ventana, con reconocimiento local"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <!-- `iurevoz` en la terminal: subcomandos (alternar, leer, --mcp…) y la ruta estable
+             que se registra en Claude Code como servidor MCP. -->
+        <uap3:Extension Category="windows.appExecutionAlias" Executable="iurevoz.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="iurevoz.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+        <!-- Abrir con la sesión (solo el ícono junto al reloj). La app la enciende y apaga con
+             Windows.ApplicationModel.StartupTask (src/bandeja.rs). -->
+        <desktop:Extension Category="windows.startupTask" Executable="iurevoz.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="IureVozInicio" Enabled="false" DisplayName="IureVoz" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="microphone" />
+  </Capabilities>
+</Package>

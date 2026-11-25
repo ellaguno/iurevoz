@@ -114,7 +114,12 @@ pub fn servir() -> i32 {
 
 /// Comando para registrar IureVoz en Claude Code (alcance de usuario).
 pub fn comando_claude_code() -> anyhow::Result<Vec<String>> {
-    let exe = iurefficient_connect::agents::command()?;
+    // instalada desde la Store, el alias de WindowsApps (la carpeta del paquete cambia con cada versión)
+    let exe = if crate::plataforma::empaquetada() {
+        crate::plataforma::exe_estable()?.to_string_lossy().into_owned()
+    } else {
+        iurefficient_connect::agents::command()?
+    };
     Ok(["claude", "mcp", "add", "--scope", "user", "iurevoz", "--", &exe, "--mcp"].map(String::from).to_vec())
 }
 
