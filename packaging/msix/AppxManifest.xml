@@ -51,7 +51,7 @@
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png" />
       <Extensions>
-        <!-- `iurevoz` en la terminal: subcomandos (alternar, leer, --mcp…) y la ruta estable
+        <!-- `iurevoz` en la terminal: subcomandos (alternar, leer, el servidor MCP…) y la ruta estable
              que se registra en Claude Code como servidor MCP. -->
         <uap3:Extension Category="windows.appExecutionAlias" Executable="iurevoz.exe" EntryPoint="Windows.FullTrustApplication">
           <uap3:AppExecutionAlias>
