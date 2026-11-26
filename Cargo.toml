@@ -60,6 +60,8 @@ tray-icon = "0.21"
 uds_windows = "1.2.1"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 windows = { version = "0.62", features = [
+    "ApplicationModel",
+    "ApplicationModel_Activation",
     "Data_Xml_Dom",
     "UI_Notifications",
     "Win32_Foundation",

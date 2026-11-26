@@ -621,7 +621,11 @@ fn ajustes_llm(ui: &mut egui::Ui, id: &str, c: &mut Correccion) -> bool {
             None => match crate::llm_local::estado(&c.modelo) {
                 (true, true) => drop(ui.label(RichText::new("listo · se arranca solo al usarlo").small().color(Color32::from_rgb(60, 160, 60)))),
                 _ => {
-                    if ui.button("Descargar").on_hover_text("llama.cpp (35 MB) y el modelo, una sola vez").clicked() {
+                    if ui.button("Descargar").on_hover_text(if crate::plataforma::empaquetada() {
+                        "el modelo, una sola vez (llama.cpp viene con la app)"
+                    } else {
+                        "llama.cpp (35 MB) y el modelo, una sola vez"
+                    }).clicked() {
                         let ctx = ui.ctx().clone();
                         crate::llm_local::preparar_en_fondo(c.modelo.clone(), move || ctx.request_repaint());
                     }

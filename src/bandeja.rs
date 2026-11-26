@@ -452,7 +452,10 @@ pub mod arranque {
     }
 }
 
-/// Arranque con la sesión, en Windows: valor `IureVoz` en `HKCU\…\Run`.
+/// Arranque con la sesión, en Windows: valor `IureVoz` en `HKCU\…\Run`. Instalada desde
+/// Microsoft Store (MSIX) la clave Run no sirve: se usa la StartupTask `IureVozInicio` del
+/// paquete (`packaging/msix/AppxManifest.xml`), que el usuario también ve y apaga en
+/// Configuración → Aplicaciones → Inicio.
 #[cfg(windows)]
 pub mod arranque {
     use std::process::Command;
@@ -464,11 +467,17 @@ pub mod arranque {
     }
 
     pub fn activo() -> bool {
+        if crate::plataforma::empaquetada() {
+            return tarea::activa();
+        }
         reg(&["query", CLAVE, "/v", "IureVoz"]).is_ok_and(|o| o.status.success())
     }
 
     /// Crea o quita la entrada. Arranca sin ventana, solo con el ícono (`--autoarranque`).
     pub fn fijar(si: bool) -> anyhow::Result<()> {
+        if crate::plataforma::empaquetada() {
+            return tarea::fijar(si);
+        }
         let out = if si {
             let exe = std::env::current_exe()?;
             reg(&["add", CLAVE, "/v", "IureVoz", "/t", "REG_SZ", "/d", &format!("\"{}\" --autoarranque", exe.display()), "/f"])?
@@ -481,6 +490,67 @@ pub mod arranque {
             anyhow::bail!("reg: {}", String::from_utf8_lossy(&out.stderr).trim());
         }
         Ok(())
+    }
+
+    /// `Windows.ApplicationModel.StartupTask` (solo dentro del paquete MSIX). Las llamadas
+    /// asíncronas se esperan en un hilo aparte, fuera del hilo de la interfaz.
+    mod tarea {
+        use windows::ApplicationModel::{StartupTask, StartupTaskState};
+        use windows::core::HSTRING;
+
+        const ID: &str = "IureVozInicio";
+
+        fn en_hilo<T: Send + 'static>(f: impl FnOnce() -> windows::core::Result<T> + Send + 'static) -> anyhow::Result<T> {
+            let r = std::thread::spawn(f).join().map_err(|_| anyhow::anyhow!("StartupTask: el hilo falló"))?;
+            Ok(r?)
+        }
+
+        fn tarea() -> windows::core::Result<StartupTask> {
+            StartupTask::GetAsync(&HSTRING::from(ID))?.join()
+        }
+
+        pub fn estado() -> anyhow::Result<StartupTaskState> {
+            en_hilo(|| tarea()?.State())
+        }
+
+        pub fn activa() -> bool {
+            estado().is_ok_and(|e| e == StartupTaskState::Enabled || e == StartupTaskState::EnabledByPolicy)
+        }
+
+        pub fn fijar(si: bool) -> anyhow::Result<()> {
+            if !si {
+                return en_hilo(|| tarea()?.Disable());
+            }
+            match en_hilo(|| tarea()?.RequestEnableAsync()?.join())? {
+                StartupTaskState::Enabled | StartupTaskState::EnabledByPolicy => Ok(()),
+                StartupTaskState::DisabledByUser => anyhow::bail!(
+                    "está desactivado en Configuración de Windows → Aplicaciones → Inicio; actívalo ahí"
+                ),
+                StartupTaskState::DisabledByPolicy => anyhow::bail!("lo impide una directiva del equipo"),
+                otro => anyhow::bail!("Windows no lo activó (estado {})", otro.0),
+            }
+        }
+    }
+
+    /// Texto del estado, para `iurevoz inicio`.
+    pub fn describir() -> String {
+        if !crate::plataforma::empaquetada() {
+            return format!("clave Run de HKCU: {}", if activo() { "activo" } else { "inactivo" });
+        }
+        match tarea::estado() {
+            Ok(e) => {
+                let nombre = match e.0 {
+                    0 => "inactivo",
+                    1 => "desactivado por el usuario",
+                    2 => "activo",
+                    3 => "desactivado por directiva",
+                    4 => "activo por directiva",
+                    _ => "desconocido",
+                };
+                format!("StartupTask del paquete: {nombre}")
+            }
+            Err(e) => format!("StartupTask del paquete: error {e:#}"),
+        }
     }
 }
 

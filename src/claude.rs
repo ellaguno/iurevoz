@@ -113,7 +113,7 @@ pub enum Progreso {
 
 /// Corre una tarea con Claude Code y devuelve su respuesta final.
 pub fn ejecutar(tarea: &str, mut progreso: impl FnMut(Progreso)) -> Result<String> {
-    let exe = std::env::current_exe()?;
+    let exe = crate::plataforma::exe_estable()?;
     let mcp = json!({"mcpServers": {"iurevoz": {"command": exe, "args": ["mcp-permisos"]}}});
     let ruta_mcp = std::env::temp_dir().join(format!("iurevoz-mcp-{}.json", std::process::id()));
     std::fs::write(&ruta_mcp, mcp.to_string())?;

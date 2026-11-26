@@ -13,7 +13,7 @@ La misma app compila para Windows 10/11 x64 y para macOS 11 o posterior (app uni
 | Combinaciones del modo comando | tal cual | tal cual | Ctrl se pulsa como ⌘ (Ctrl+T es ⌘T), Alt como ⌥ y Super como ⌃ |
 | Ícono | extensión AppIndicator | área de notificación, junto al reloj | barra de menús |
 | Cerrar la ventana | la destruye; el ícono la vuelve a crear | la esconde | esconde la app (como ⌘H); el Dock o el ícono la traen |
-| Inicio con la sesión | `~/.config/autostart` | `HKCU\…\CurrentVersion\Run` | LaunchAgent en `~/Library/LaunchAgents` |
+| Inicio con la sesión | `~/.config/autostart` | `HKCU\…\CurrentVersion\Run` (desde la Store, la StartupTask del paquete) | LaunchAgent en `~/Library/LaunchAgents` |
 | Leer la selección | selección primaria (`wl-paste`) | Ctrl+C y se devuelve el portapapeles como estaba | ⌘C y se devuelve el portapapeles (`pbpaste`/`pbcopy`) |
 | Abrir apps | archivos `.desktop` | accesos del menú Inicio y las apps del sistema (Calculadora, Configuración…) | paquetes `.app` de Aplicaciones, con su nombre en español (Calculadora, Notas…) |
 | Volumen | `wpctl` | Core Audio del dispositivo predeterminado | AppleScript (`osascript`) |
@@ -31,6 +31,61 @@ Desde Linux, `cargo check --target x86_64-pc-windows-msvc` (o `aarch64-apple-dar
 ### Firma en macOS
 
 Con los secrets de Apple en el repositorio (los mismos que usa iureapps; se cargan con su `scripts/apple-secrets.sh` y `REPO=ellaguno/iurevoz`), el flujo firma la app con Developer ID y «hardened runtime» (el micrófono va en `packaging/macos/iurevoz.entitlements`), notariza el `.dmg` y engrapa el ticket en el `.dmg` y en la app. Sin los secrets la firma es «ad hoc»: abre con clic derecho → Abrir (iureapps le quita la cuarentena), pero macOS vuelve a pedir los permisos de micrófono y Accesibilidad en cada versión.
+
+### Microsoft Store (MSIX)
+
+El job de Windows de `release.yml` genera dos artefactos (no van a la release):
+
+- `msix-store`: `IureVoz-<ver>-windows-x64.msix`, sin firmar, para subir a Partner Center (la
+  Store lo firma).
+- `msix-prueba`: el mismo paquete firmado con un certificado de prueba y su `.cer`. Para
+  instalarlo a mano: importar el `.cer` en *Equipo local → Personas de confianza* y abrir el
+  `.msix`.
+
+Lleva lo mismo que instala el `.exe` de Inno Setup (`iurevoz.exe`, `README.md`, `LICENSE.md`)
+y, en `llama\`, el `llama-server.exe` de llama.cpp con sus DLL y licencias: la misma versión
+que la app descarga en las demás instalaciones (`VERSION` en `src/llm_local.rs` y
+`LLAMA_VERSION` en `release.yml`, que hay que cambiar juntas; el flujo verifica el SHA256 del
+`.zip` de llama.cpp y falla si no coinciden). Antes de subirlo, el flujo instala la copia de
+prueba y, dentro del paquete, comprueba `iurevoz --version` (que además dice si ve el
+llama-server del paquete), `iurevoz llama-server --version` (lo lanza desde la carpeta
+instalada como lo hace la app; desde fuera del paquete Windows no deja ejecutarlo), que
+la StartupTask empiece apagada y se encienda y apague con `iurevoz inicio si|no`, y que la
+ventana abra; luego la desinstala.
+
+La identidad del paquete sale de Partner Center (*Identidad del producto*) y va en tres
+variables del repo (*Settings → Secrets and variables → Actions → Variables*):
+`MSIX_IDENTITY_NAME` (`Package/Identity/Name`), `MSIX_PUBLISHER` (`Package/Identity/Publisher`,
+`CN=…`) y `MSIX_PUBLISHER_DISPLAY_NAME` (`Package/Properties/PublisherDisplayName`). Sin ellas
+el paquete lleva una identidad de prueba que Partner Center rechaza. El `DisplayName` del
+manifiesto (`packaging/msix/AppxManifest.xml`) es «IureVoz», el nombre reservado.
+
+Diferencias con la versión del instalador:
+
+- **Capacidades:** `runFullTrust` (app de escritorio Win32: teclea con `SendInput` en otras
+  ventanas, registra atajos globales con `RegisterHotKey` y lanza `llama-server`, Claude Code y
+  las demás apps de la suite), `microphone` e `internetClient`. Sin `unvirtualizedResources`:
+  lo que escribe en `%APPDATA%\iurevoz` y `%LOCALAPPDATA%\iurevoz` (ajustes, modelos, registro)
+  queda dentro del paquete y se borra al desinstalar.
+- **Inicio con la sesión:** en un paquete la clave Run no sirve. El manifiesto declara la
+  StartupTask `IureVozInicio`, apagada por omisión; *Ajustes → Inicio* (o `iurevoz inicio si`)
+  la enciende con `Windows.ApplicationModel.StartupTask` y Windows la muestra en
+  *Configuración → Aplicaciones → Inicio*. Abierta así, arranca sin ventana, como con
+  `--autoarranque`.
+- **Línea de comandos:** el alias `iurevoz` (en `%LOCALAPPDATA%\Microsoft\WindowsApps`) da los
+  subcomandos y es la ruta que se registra en Claude Code como servidor MCP, porque la carpeta
+  del paquete cambia con cada versión.
+- **Actualizaciones:** las hace la Store. IureVoz no se actualiza solo en ninguna versión.
+  Empaquetada nunca descarga ejecutables: usa el `llama-server` del paquete y sólo descarga
+  modelos de voz y de lenguaje (datos), que la política de la Store permite.
+- **Avisos:** usan la identidad del paquete en lugar del acceso directo del instalador.
+
+La versión del paquete es la de `Cargo.toml` con el primer número más 1 y un `.0` al final
+(`0.4.0` → `1.4.0.0`), porque la Store no acepta un primer número 0 y exige el cuarto en 0;
+es el mismo esquema que iureapps e IureProject. Cada envío necesita una versión mayor que la
+anterior.
+
+La política de privacidad de la ficha de la Store es [`PRIVACY.md`](PRIVACY.md).
 
 ## Uso
 

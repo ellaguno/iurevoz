@@ -13,6 +13,10 @@
 # notariza; sin ellos se firma «ad hoc» y avisa: abre con clic derecho → Abrir (o instalada
 # con iureapps), pero macOS vuelve a pedir los permisos en cada versión.
 #
+# Windows también arma el paquete MSIX para Microsoft Store (artefactos `msix-store`, sin
+# firmar, para Partner Center, y `msix-prueba`, firmado con un certificado de prueba); no va a
+# la release. Ver «Microsoft Store (MSIX)» en el README.
+#
 # A mano (Actions → Release → Run workflow) compila todo sin publicar nada: los
 # paquetes quedan como artefactos de la ejecución, para probar una rama.
 name: Release
@@ -95,6 +99,149 @@ jobs:
         with:
           name: windows
           path: target/instalador/*
+
+      # Paquete para Microsoft Store (la Store lo firma), con lo mismo que instala el .exe de
+      # Inno Setup (iurevoz.exe, README.md, LICENSE.md) más llama-server en `llama\`. La identidad sale de Partner Center
+      # (Identidad del producto) y va en variables del repo; sin ellas se usan valores de prueba.
+      # Además, una copia firmada con un certificado de prueba que se instala, se prueba y se
+      # desinstala aquí mismo. Ninguno de los dos va a la release.
+      - name: Paquete MSIX (Microsoft Store)
+        shell: pwsh
+        env:
+          # llama-server va dentro del paquete: la Store no permite que la app descargue
+          # ejecutables. La misma versión que baja la app (VERSION en src/llm_local.rs).
+          LLAMA_VERSION: b11756
+          LLAMA_SHA256: 75ce69fdda503c3d6d3b3401f61369bd072194746ec65fbbc5fd7e749edd2914
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:MSIX_IDENTITY_NAME -or -not $env:MSIX_PUBLISHER -or -not $env:MSIX_PUBLISHER_DISPLAY_NAME) {
+            Write-Output "::warning::Faltan las variables MSIX_IDENTITY_NAME, MSIX_PUBLISHER o MSIX_PUBLISHER_DISPLAY_NAME: el .msix lleva una identidad de prueba y Partner Center lo rechazará."
+          }
+          $identity = if ($env:MSIX_IDENTITY_NAME) { $env:MSIX_IDENTITY_NAME } else { 'Iurefficient.IureVoz' }
+          $publisher = if ($env:MSIX_PUBLISHER) { $env:MSIX_PUBLISHER } else { 'CN=Iurefficient' }
+          $display = if ($env:MSIX_PUBLISHER_DISPLAY_NAME) { $env:MSIX_PUBLISHER_DISPLAY_NAME } else { 'Iurefficient' }
+          # La Store no acepta un primer número 0 y exige el cuarto en 0: 0.4.0 → 1.4.0.0
+          # (el mismo esquema que iureapps e IureProject). Siempre crece; la 1.0.0 será 2.0.0.0.
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $parts = ($cargo -replace '-.*$', '').Split('.')
+          $version = "$([int]$parts[0] + 1).$($parts[1]).$($parts[2]).0"
+          Write-Output "Versión del paquete: $version"
+          # Los valores van dentro de atributos XML.
+          $identityXml = [System.Security.SecurityElement]::Escape($identity)
+          $publisherXml = [System.Security.SecurityElement]::Escape($publisher)
+          $displayXml = [System.Security.SecurityElement]::Escape($display)
+
+          $sdk = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Directory |
+            Where-Object { $_.Name -match '^10\.' -and (Test-Path "$($_.FullName)\x64\makeappx.exe") } |
+            Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          $tools = "$($sdk.FullName)\x64"
+          Write-Output "Windows SDK: $tools"
+
+          $root = 'msix\paquete'
+          New-Item -ItemType Directory -Force $root, msix\store, msix\prueba | Out-Null
+          Copy-Item -Recurse packaging\msix\Assets "$root\Assets"
+          Copy-Item target\release\iurevoz.exe, README.md, LICENSE.md $root
+
+          # llama.cpp (Vulkan): llama-server.exe, sus DLL y licencias, en `llama\`.
+          $llamaVer = (Select-String -Path src\llm_local.rs -Pattern '^const VERSION: &str = "([^"]+)"').Matches.Groups[1].Value
+          if ($llamaVer -ne $env:LLAMA_VERSION) { Write-Output "::error::src/llm_local.rs usa llama.cpp $llamaVer y el flujo $env:LLAMA_VERSION"; exit 1 }
+          $zip = Join-Path $env:RUNNER_TEMP 'llama.zip'
+          Invoke-WebRequest "https://github.com/ggml-org/llama.cpp/releases/download/$env:LLAMA_VERSION/llama-$env:LLAMA_VERSION-bin-win-vulkan-x64.zip" -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:LLAMA_SHA256) { Write-Output "::error::SHA256 de llama.cpp: $hash (se esperaba $env:LLAMA_SHA256)"; exit 1 }
+          $llamaTmp = Join-Path $env:RUNNER_TEMP 'llama'
+          Expand-Archive $zip -DestinationPath $llamaTmp -Force
+          New-Item -ItemType Directory -Force "$root\llama" | Out-Null
+          Copy-Item "$llamaTmp\llama-server.exe", "$llamaTmp\*.dll", "$llamaTmp\LICENSE-*" "$root\llama"
+          Invoke-WebRequest "https://raw.githubusercontent.com/ggml-org/llama.cpp/$env:LLAMA_VERSION/LICENSE" -OutFile "$root\llama\LICENSE-llama.cpp"
+          Get-ChildItem "$root\llama" | Measure-Object -Property Length -Sum | ForEach-Object { Write-Output "llama.cpp $env:LLAMA_VERSION en el paquete: $($_.Count) archivos, $([math]::Round($_.Sum / 1MB, 1)) MB" }
+          $manifest = Get-Content packaging\msix\AppxManifest.xml -Raw
+          $manifest = $manifest.Replace('@IDENTITY_NAME@', $identityXml).Replace('@PUBLISHER@', $publisherXml)
+          $manifest = $manifest.Replace('@PUBLISHER_DISPLAY_NAME@', $displayXml).Replace('@VERSION@', $version)
+          Set-Content "$root\AppxManifest.xml" $manifest -Encoding utf8
+
+          # resources.pri: elige los íconos sin fondo (altform-unplated) de la barra de tareas.
+          & "$tools\makepri.exe" createconfig /cf msix\priconfig.xml /dq es-MX /o
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$tools\makepri.exe" new /pr $root /cf msix\priconfig.xml /mn "$root\AppxManifest.xml" /of "$root\resources.pri" /o
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $msix = "IureVoz-$cargo-windows-x64.msix"
+          & "$tools\makeappx.exe" pack /d $root /p "msix\store\$msix" /o
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Copia de prueba: certificado autofirmado con el mismo Publisher.
+          $cert = New-SelfSignedCertificate -Type Custom -Subject $publisher -KeyUsage DigitalSignature `
+            -FriendlyName 'IureVoz (prueba)' -CertStoreLocation Cert:\CurrentUser\My `
+            -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}')
+          $pass = ConvertTo-SecureString -String 'prueba' -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath msix\prueba.pfx -Password $pass | Out-Null
+          Export-Certificate -Cert $cert -FilePath msix\prueba\IureVoz-prueba.cer | Out-Null
+          $prueba = "msix\prueba\IureVoz-$cargo-windows-x64-prueba.msix"
+          Copy-Item "msix\store\$msix" $prueba
+          & "$tools\signtool.exe" sign /fd SHA256 /f msix\prueba.pfx /p prueba $prueba
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item msix\prueba.pfx
+
+          # Prueba: instalar la copia firmada y, dentro del paquete (por el alias `iurevoz`):
+          # la versión, la StartupTask (apagada → encender → apagar) y abrir la ventana.
+          Import-Certificate -FilePath msix\prueba\IureVoz-prueba.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+          Add-AppxPackage -Path $prueba
+          $pkg = Get-AppxPackage | Where-Object { $_.Name -eq $identity } | Select-Object -First 1
+          Write-Output "Instalado: $($pkg.PackageFullName)"
+          $alias = "$env:LOCALAPPDATA\Microsoft\WindowsApps\iurevoz.exe"
+          # iurevoz.exe es de subsistema «windows»: con la salida redirigida a un archivo escribe ahí
+          function Iurevoz([string[]]$argumentos) {
+            $out = Join-Path $env:RUNNER_TEMP 'iurevoz-salida.txt'
+            $err = Join-Path $env:RUNNER_TEMP 'iurevoz-error.txt'
+            $p = Start-Process -FilePath $alias -ArgumentList $argumentos -NoNewWindow -PassThru `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+            if (-not $p.WaitForExit(60000)) { $p.Kill(); return "(no terminó en 60 s)" }
+            $texto = ("$(Get-Content $out -Raw)" + "$(Get-Content $err -Raw)").Trim()
+            Write-Output "iurevoz $($argumentos -join ' ') → [$($p.ExitCode)] $texto"
+          }
+          $fallas = @()
+          $r = Iurevoz @('--version'); Write-Output $r
+          if ("$r" -notmatch [regex]::Escape("iurevoz $cargo")) { $fallas += 'la versión no respondió dentro del paquete' }
+          if ("$r" -notmatch [regex]::Escape("llama.cpp $env:LLAMA_VERSION`: en el paquete")) { $fallas += 'la app no ve el llama-server del paquete' }
+          # llama-server de la carpeta del paquete instalado (WindowsApps), lanzado por IureVoz
+          # como lo hace la app: desde fuera del paquete Windows no deja ejecutarlo (acceso denegado)
+          $r = Iurevoz @('llama-server', '--version'); Write-Output $r
+          if ("$r" -notmatch '→ \[0\]' -or "$r" -notmatch "build $($env:LLAMA_VERSION.TrimStart('b'))") { $fallas += 'llama-server --version no corrió desde el paquete' }
+          $r = Iurevoz @('inicio'); Write-Output $r
+          if ("$r" -notmatch 'StartupTask del paquete: inactivo') { $fallas += 'la StartupTask no empieza apagada' }
+          $r = Iurevoz @('inicio', 'si'); Write-Output $r
+          if ("$r" -notmatch 'StartupTask del paquete: activo') { $fallas += 'no se pudo encender la StartupTask' }
+          $r = Iurevoz @('inicio', 'no'); Write-Output $r
+          if ("$r" -notmatch 'StartupTask del paquete: inactivo') { $fallas += 'no se pudo apagar la StartupTask' }
+          # La ventana: se abre como desde el menú Inicio y debe seguir viva a los 15 s.
+          Start-Process explorer.exe "shell:AppsFolder\$($pkg.PackageFamilyName)!IureVoz"
+          Start-Sleep -Seconds 15
+          $vivo = Get-Process iurevoz -ErrorAction SilentlyContinue
+          if ($vivo) {
+            Write-Output "La ventana sigue abierta: $($vivo.Path)"
+            $vivo | Stop-Process -Force
+          } else {
+            Write-Output "::warning::IureVoz no siguió abierto 15 s después de abrirlo desde el paquete (puede ser el runner sin escritorio)"
+          }
+          Start-Sleep -Seconds 2
+          Remove-AppxPackage -Package $pkg.PackageFullName
+          if ($fallas) { $fallas | ForEach-Object { Write-Output "::error::MSIX: $_" }; exit 1 }
+          Get-ChildItem msix\store, msix\prueba
+
+      - name: Subir el MSIX para la Store
+        uses: actions/upload-artifact@v7
+        with:
+          name: msix-store
+          path: msix/store/*
+
+      - name: Subir el MSIX de prueba
+        uses: actions/upload-artifact@v7
+        with:
+          name: msix-prueba
+          path: msix/prueba/*
 
   macos:
     runs-on: macos-latest
@@ -245,6 +392,8 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: paquetes
+          # los MSIX (msix-*) no van a la release
+          pattern: '{linux,windows,macos}'
           merge-multiple: true
 
       - name: Publicar

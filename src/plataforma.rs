@@ -63,7 +63,8 @@ pub fn notificar(titulo: &str, cuerpo: &str, icono: &str) {
 
 /// En Windows es un aviso del Centro de notificaciones (WinRT). Windows solo lo muestra si
 /// el AppUserModelID tiene un acceso directo en el menú Inicio: el del instalador lleva el
-/// de IureVoz; sin él (una compilación de desarrollo) se usa el de PowerShell.
+/// de IureVoz; sin él (una compilación de desarrollo) se usa el de PowerShell. Instalada desde
+/// Microsoft Store (MSIX) se usa el del paquete.
 #[cfg(windows)]
 pub fn notificar(titulo: &str, cuerpo: &str, _icono: &str) {
     use windows::Data::Xml::Dom::XmlDocument;
@@ -83,11 +84,68 @@ pub fn notificar(titulo: &str, cuerpo: &str, _icono: &str) {
         let doc = XmlDocument::new()?;
         doc.LoadXml(&HSTRING::from(xml))?;
         let aviso = ToastNotification::CreateToastNotification(&doc)?;
-        ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))?.Show(&aviso)
+        let avisador = if empaquetada() {
+            ToastNotificationManager::CreateToastNotifier()?
+        } else {
+            ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))?
+        };
+        avisador.Show(&aviso)
     })();
     if let Err(e) = r {
         eprintln!("notificación: {e}");
     }
+}
+
+/// ¿Corre instalada como paquete MSIX (Microsoft Store)? Entonces la Store la actualiza, el
+/// arranque con la sesión es una StartupTask del paquete y la carpeta del programa
+/// (`WindowsApps`) no se puede ejecutar por su ruta desde fuera.
+#[cfg(windows)]
+pub fn empaquetada() -> bool {
+    use std::sync::OnceLock;
+    static EMPAQUETADA: OnceLock<bool> = OnceLock::new();
+    *EMPAQUETADA.get_or_init(|| {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentPackageFullName(length: *mut u32, name: *mut u16) -> i32;
+        }
+        const APPMODEL_ERROR_NO_PACKAGE: i32 = 15700;
+        let mut largo = 0u32;
+        // con paquete devuelve ERROR_INSUFFICIENT_BUFFER (el búfer vacío no alcanza)
+        let r = unsafe { GetCurrentPackageFullName(&mut largo, std::ptr::null_mut()) };
+        r != APPMODEL_ERROR_NO_PACKAGE
+    })
+}
+
+#[cfg(not(windows))]
+pub fn empaquetada() -> bool {
+    false
+}
+
+/// La ruta con que otros programas (Claude Code) lanzan IureVoz. Empaquetada es el alias
+/// `%LOCALAPPDATA%\Microsoft\WindowsApps\iurevoz.exe`: no cambia con cada versión y entra con la
+/// identidad del paquete (misma configuración y mismo socket que la app abierta).
+pub fn exe_estable() -> std::io::Result<std::path::PathBuf> {
+    if empaquetada() {
+        if let Some(alias) = dirs::data_local_dir().map(|d| d.join(r"Microsoft\WindowsApps\iurevoz.exe")) {
+            if alias.exists() {
+                return Ok(alias);
+            }
+        }
+    }
+    std::env::current_exe()
+}
+
+/// ¿La abrió la StartupTask del paquete al iniciar la sesión? (equivale a `--autoarranque`)
+#[cfg(windows)]
+pub fn abierta_por_startup_task() -> bool {
+    use windows::ApplicationModel::Activation::ActivationKind;
+    use windows::ApplicationModel::AppInstance;
+    empaquetada() && AppInstance::GetActivatedEventArgs().and_then(|a| a.Kind()).is_ok_and(|k| k == ActivationKind::StartupTask)
+}
+
+#[cfg(not(windows))]
+pub fn abierta_por_startup_task() -> bool {
+    false
 }
 
 /// En macOS, con `display notification` de AppleScript (sale a nombre del Editor de Scripts).

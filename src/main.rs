@@ -59,12 +59,15 @@ Uso:
   iurevoz entrenar-palabra [frase]  entrena el detector dedicado de la palabra clave
   iurevoz vigilia A.wav         simula «siempre escuchando» con un archivo
   iurevoz preparar-llm [modelo] descarga llama.cpp y el modelo local (gemma4-e2b, qwen3.5-4b, qwen3.5-2b)
+  iurevoz llama-server [args]    corre el llama-server de la app (p. ej. --version)
   iurevoz conectar-iurefficient crea el token de IureVoz con la sesión de la suite
   iurevoz decir \"texto\" [--voz CLAVE] [--guardar A.wav]
                                 habla con la voz local (claves: piper-ald, piper-claude,
                                 piper-daniela, kokoro-dora, kokoro-alex, supertonic)
   iurevoz normalizar [\"texto\"]  muestra el texto como lo leerá la voz (sin texto: una línea por
                                 línea de la entrada estándar)
+  iurevoz inicio [si|no]        muestra (o cambia) si IureVoz se abre al iniciar la sesión
+  iurevoz --version             muestra la versión
   iurevoz --sin-portal          abre la ventana sin teclear ni atajo global
 ";
 
@@ -78,6 +81,22 @@ fn main() -> Result<()> {
     plataforma::completar_path();
     match args.first().map(String::as_str) {
         Some("-h" | "--help" | "ayuda") => print!("{AYUDA}"),
+        Some("-V" | "--version") => {
+            println!("iurevoz {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", llm_local::describir_binario());
+        }
+        Some("inicio") => {
+            match args.get(1).map(String::as_str) {
+                Some("si" | "sí") => bandeja::arranque::fijar(true)?,
+                Some("no") => bandeja::arranque::fijar(false)?,
+                Some(otro) => bail!("inicio: «{otro}» no es «si» ni «no»"),
+                None => {}
+            }
+            #[cfg(windows)]
+            println!("{}", bandeja::arranque::describir());
+            #[cfg(not(windows))]
+            println!("{}", if bandeja::arranque::activo() { "activo" } else { "inactivo" });
+        }
         Some(o @ ("alternar" | "leer" | "callar" | "rechazar")) if args.len() == 1 => {
             if !control::enviar_a_instancia(o) {
                 bail!("iurevoz no está abierto");
@@ -101,6 +120,7 @@ fn main() -> Result<()> {
             println!("llama-server listo en {:.1} s: {url}", t.elapsed().as_secs_f32());
             llm_local::apagar();
         }
+        Some("llama-server") => std::process::exit(llm_local::ejecutar_binario(&args[1..])?),
         Some("conectar-iurefficient") => println!("{}", iure::conectar()?),
         #[cfg(target_os = "linux")]
         Some("instalar-atajos") => println!("{}", atajos_gnome::instalar()?),
@@ -220,7 +240,9 @@ fn main() -> Result<()> {
         }
         Some(otro) if !otro.starts_with("--") => bail!("subcomando desconocido: {otro} (ver iurevoz --help)"),
         _ => {
-            let autoarranque = args.iter().any(|a| a == "--autoarranque");
+            // `--autoarranque` lo ponen la clave Run, el LaunchAgent y el .desktop; la StartupTask
+            // del paquete MSIX no lleva argumentos, así que se pregunta a Windows cómo se abrió
+            let autoarranque = args.iter().any(|a| a == "--autoarranque") || plataforma::abierta_por_startup_task();
             // ya hay una abierta: el segundo arranque (desde el menú) muestra su ventana; el de la
             // sesión no hace nada
             if autoarranque && control::instancia_abierta() {
