@@ -14,6 +14,7 @@ mod claude;
 mod config;
 mod control;
 mod correccion;
+mod desk;
 mod detector;
 mod entrenamiento;
 mod escribir;
@@ -150,6 +151,10 @@ fn main() -> Result<()> {
                 pausar_escucha: Box::new(|_| {}),
                 destino: Box::new(|_| {}),
                 dictar: Box::new(|si| println!("  · {} el dictado (en la terminal no hay micrófono)", if si { "empezaría" } else { "terminaría" })),
+                escuchar: Box::new(|p: &str, _| {
+                    println!("  ? preguntaría por voz: {p} (en la terminal no hay micrófono)");
+                    String::new()
+                }),
             };
             let ag = agente::Agente::new(cfg.comandos.llm.clone(), Some(portal), voz.clone())
                 .con_ganchos(std::sync::Arc::new(ganchos));

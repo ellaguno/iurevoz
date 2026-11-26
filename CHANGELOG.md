@@ -3,6 +3,19 @@
 Versiones de IureVoz. El flujo `.github/workflows/release.yml` toma las notas de la
 sección `## vX.Y.Z` al subir la etiqueta.
 
+## Sin publicar
+
+### Agregado
+- **IureDesk por voz**: las instrucciones sobre correo, contactos y notas van a un
+  sub-agente con las herramientas del servidor MCP de IureDesk (`iuredesk --mcp`):
+  «¿tengo correos de Pérez?», «resume el último correo de Ana», «¿cuál es el teléfono de
+  Juan Ramón?», «crea una nota con…», «agenda en IureDesk…». «Dicta un correo para Ana
+  López» busca su correo en los contactos, pide el texto por voz (termina tras 3 s de
+  silencio, con la puntuación dictada) y abre el redactor de IureDesk con todo listo para
+  revisarlo y enviarlo. Nada se envía nunca. Los borradores, eventos y notas se confirman
+  antes, con un resumen armado en código. IureDesk se busca en el PATH y donde lo dejan
+  sus paquetes; `IUREVOZ_IUREDESK` fuerza la ruta.
+
 ## v0.4.0 — 2026-11-13
 
 ### Agregado

@@ -609,7 +609,7 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
             }
         }
         let ganchos = {
-            let (c1, c2, c3, c4) = (control.clone(), control.clone(), control.clone(), control.clone());
+            let (c1, c2, c3, c4, c5) = (control.clone(), control.clone(), control.clone(), control.clone(), control.clone());
             std::sync::Arc::new(crate::agente::Ganchos {
                 confirmar: Box::new(move |desc: &str| {
                     let (tx, rx) = crossbeam_channel::bounded(1);
@@ -621,6 +621,15 @@ fn hilo_agente(rx: Receiver<(usize, String, Config)>, portal: Option<Portal>, vo
                 pausar_escucha: Box::new(move |si| drop(c2.send(Control::PausarVigilia(si)))),
                 dictar: Box::new(move |si| drop(c3.send(Control::Dictar(si)))),
                 destino: Box::new(move |d| drop(c4.send(Control::Destino(d)))),
+                escuchar: Box::new(move |pregunta: &str, pausa: f64| {
+                    let (tx, rx) = crossbeam_channel::bounded(1);
+                    let _ = c5.send(Control::Escuchar {
+                        pregunta: Some(pregunta.to_string()),
+                        pausa: std::time::Duration::from_secs_f64(pausa),
+                        tx,
+                    });
+                    rx.recv_timeout(std::time::Duration::from_secs(600)).unwrap_or_default()
+                }),
             })
         };
         let mut ag = Agente::new(cfg.comandos.llm.clone(), portal.clone(), voz.clone()).con_ganchos(ganchos);

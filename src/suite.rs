@@ -28,13 +28,11 @@ struct ClienteMcp {
 }
 
 impl ClienteMcp {
-    fn arrancar(app: AppId) -> Result<Self> {
-        let def = apps::def(app);
-        let bin = apps::locate(def).with_context(|| format!("{} no está instalada", def.name))?;
+    fn arrancar(bin: &Path, nombre: &str) -> Result<Self> {
         let mut cmd = Command::new(bin);
         cmd.arg("--mcp").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         // si IureVoz muere, el servidor también
-        let mut hijo = crate::procesos::lanzar(cmd).with_context(|| format!("no pude arrancar {} --mcp", def.name))?;
+        let mut hijo = crate::procesos::lanzar(cmd).with_context(|| format!("no pude arrancar {nombre} --mcp"))?;
         let entrada = hijo.stdin.take().unwrap();
         let salida = BufReader::new(hijo.stdout.take().unwrap());
         let mut c = Self { hijo, entrada, salida, siguiente: 1 };
@@ -109,17 +107,39 @@ fn clave(app: AppId) -> &'static str {
 
 /// Llama una herramienta MCP de una app de la suite, arrancando su servidor si hace falta.
 fn mcp(app: AppId, herramienta: &str, args: Value, espera: Duration) -> Result<Value> {
+    let def = apps::def(app);
+    mcp_de(clave(app), def.name, || apps::locate(def).with_context(|| format!("{} no está instalada", def.name)), |c| {
+        c.llamar(herramienta, args, espera)
+    })
+}
+
+/// Igual que `mcp`, para un programa que connect no conoce (p. ej. IureDesk): `k` identifica el
+/// proceso que se conserva y `bin` lo localiza solo si hay que arrancarlo.
+pub fn mcp_programa(k: &'static str, nombre: &str, bin: impl FnOnce() -> Result<PathBuf>, herramienta: &str, args: Value, espera: Duration) -> Result<Value> {
+    mcp_de(k, nombre, bin, |c| c.llamar(herramienta, args, espera))
+}
+
+/// Las herramientas que anuncia el servidor (`tools/list`).
+pub fn mcp_herramientas(k: &'static str, nombre: &str, bin: impl FnOnce() -> Result<PathBuf>) -> Result<Value> {
+    mcp_de(k, nombre, bin, |c| Ok(c.pedir("tools/list", json!({}), Duration::from_secs(30))?["tools"].clone()))
+}
+
+fn mcp_de(
+    k: &'static str,
+    nombre: &str,
+    bin: impl FnOnce() -> Result<PathBuf>,
+    f: impl FnOnce(&mut ClienteMcp) -> Result<Value>,
+) -> Result<Value> {
     let mut g = CLIENTES.lock().unwrap();
     let mapa = g.get_or_insert_with(HashMap::new);
-    let k = clave(app);
     // proceso muerto: se vuelve a arrancar
     if mapa.get_mut(k).is_some_and(|c| c.hijo.try_wait().ok().flatten().is_some()) {
         mapa.remove(k);
     }
     if !mapa.contains_key(k) {
-        mapa.insert(k, ClienteMcp::arrancar(app)?);
+        mapa.insert(k, ClienteMcp::arrancar(&bin()?, nombre)?);
     }
-    let r = mapa.get_mut(k).unwrap().llamar(herramienta, args, espera);
+    let r = f(mapa.get_mut(k).unwrap());
     if r.is_err() {
         // ante un error de transporte, el siguiente intento arranca limpio
         if let Some(mut c) = mapa.remove(k) {
@@ -468,7 +488,7 @@ pub fn editar_pdf(ruta: &str, operacion: &str, paginas: &[u64], grados: Option<i
 
 // ── IureTranscribe ───────────────────────────────────────────────────────────
 
-fn codificar(s: &str) -> String {
+pub fn codificar(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b',' => (b as char).to_string(),

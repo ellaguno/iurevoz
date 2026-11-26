@@ -23,7 +23,8 @@ script o programa, ejecutar comandos, instalar o configurar, mover, copiar, reno
 pedir_a_claude si está disponible; nunca lo intentes tecleando en una terminal. Si no está, di que no puedes. \
 Si la instrucción menciona archivos, carpetas, PDF, escritos, grabaciones, juntas, transcripciones o el editor, \
 usa expedientes_y_apps (son archivos de este equipo, nunca de internet). Para proyectos, tareas, vencimientos o \
-expedientes en Iurefficient usa consultar_iurefficient. \
+expedientes en Iurefficient usa consultar_iurefficient. Para correo electrónico (buscar, leer, resumir, dictar o \
+redactar correos), contactos y notas usa correo_y_contactos. \
 Nunca inventes URLs, cifras ni resultados: solo cuenta lo que devolvió una herramienta. \
 Si la instrucción suena a abrir algo (aunque esté mal escrita, p. ej. «apre» o «habre»), usa abrir_aplicacion. \
 Nunca digas que hiciste o harás algo sin haber llamado la herramienta correspondiente. \
@@ -32,7 +33,8 @@ Si te preguntan algo de conocimiento general, responde tú en una o dos frases; 
 Si preguntan qué puedes hacer: dictar en cualquier ventana (con puntuación, viñetas y «borra la palabra»), \
 abrir apps y páginas, buscar en internet, leer encabezados de noticias; consultar Iurefficient (proyectos, tareas, \
 agenda, horas, CRM) y registrar horas, tareas o eventos; buscar y leer archivos de IureDav, OCR de PDF, grabar \
-y transcribir juntas con IureTranscribe, escribir en IureEditor; y pasarle a Claude tareas del sistema como scripts. \
+y transcribir juntas con IureTranscribe, escribir en IureEditor; buscar y leer tu correo, dictar correos, \
+buscar contactos y crear notas o eventos en IureDesk; y pasarle a Claude tareas del sistema como scripts. \
 Cuando termines responde en español de México (tutea; nunca uses voseo), en una o dos frases cortas, porque tu respuesta se lee en voz alta. \
 No uses markdown ni listas. La persona está en México: moneda en pesos, IVA del 16 %. \
 Si una cuenta es ambigua, haz la interpretación más común y dila en la respuesta. Si la instrucción completa o responde a algo de los mensajes anteriores \
@@ -81,6 +83,22 @@ resume y da lo más importante primero (fechas próximas, pendientes). Nunca inv
     )
 }
 
+fn sistema_desk() -> String {
+    format!(
+        "Eres el ayudante de IureVoz para IureDesk: el correo, calendario, contactos, notas y tareas de este equipo. \
+Para escribir o dictar un correo nuevo usa redactar_correo: abre el redactor y, si el usuario no dijo el texto, déjalo \
+vacío y se le pide dictado; pasa los destinatarios tal como los dijo (nombres o correos), sin buscarlos antes. \
+Para leer o resumir correos usa buscar_correo (admite from:, to:, subject:, is:unread, has:attachment) y luego leer_hilo; \
+resume tú en dos o tres frases. Para contestar un correo búscalo y usa crear_borrador con reply_to_message_id y el texto \
+que dijo el usuario. Las fechas van como AAAA-MM-DD (o AAAA-MM-DDTHH:MM) calculadas desde hoy. \
+Nada se envía nunca: los correos quedan para que el usuario los revise y los envíe. Las herramientas que escriben piden \
+confirmación por su cuenta (no la pidas tú); si responden que el usuario no lo permitió, dilo y no insistas. \
+Responde en español de México (tutea; nunca voseo), breve, sin markdown ni listas largas, porque se lee en voz alta. \
+Nunca inventes datos. Hoy es {}.",
+        esc::hora_fecha().rsplit_once(',').map_or_else(|| esc::hora_fecha(), |(f, _)| f.to_string())
+    )
+}
+
 /// Sub-agentes: el principal delega para no cargar a los modelos chicos con todas las herramientas.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Modo {
@@ -89,6 +107,8 @@ enum Modo {
     Suite,
     /// Instancia web de Iurefficient por su servidor MCP.
     Iure,
+    /// IureDesk (correo, contactos, notas, calendario local) por su servidor MCP.
+    Desk,
 }
 
 /// Herramientas del sub-agente de la suite.
@@ -156,12 +176,17 @@ pub struct Ganchos {
     pub dictar: Box<dyn Fn(bool) + Send + Sync>,
     /// El dictado va a este documento de IureEditor por enlace (`None`: a la ventana activa).
     pub destino: Box<dyn Fn(Option<std::path::PathBuf>) + Send + Sync>,
+    /// Dice la pregunta y devuelve lo que el usuario conteste hasta una pausa de tantos segundos
+    /// (vacío si no dijo nada), p. ej. el cuerpo de un correo dictado.
+    pub escuchar: Box<dyn Fn(&str, f64) -> String + Send + Sync>,
 }
 
 /// «Te voy a dictar», «vamos a escribir», «toma dictado»: empezar a dictar (se decide en código).
 pub fn es_dictar(instruccion: &str) -> bool {
     let t = instruccion.to_lowercase();
+    // «te voy a dictar un correo»: eso lo redacta IureDesk
     !es_fin_dictado(&t)
+        && !["correo", "mail"].iter().any(|f| t.contains(f))
         && ["dictar", "dictado", "vamos a escribir", "voy a escribir", "a escribir unas", "toma nota", "toma notas", "escribe lo que te diga", "escribe lo que diga"]
             .iter()
             .any(|f| t.contains(f))
@@ -217,6 +242,7 @@ fn herramientas(con_claude: bool) -> Value {
         f("leer_seleccion", "Lee en voz alta el texto seleccionado (o el del portapapeles).", json!({}), &[]),
         f("leer_pagina", "Lee en voz alta el texto completo de un artículo web concreto, solo si el usuario pide que se lo lean entero. Nunca con páginas de buscadores.", json!({"url": s("URL del artículo")}), &["url"]),
         f("consultar_pagina", "Trae el texto de una página web (p. ej. la portada de un periódico) para que tú la resumas o digas sus encabezados. Usa la URL oficial del sitio (nytimes.com, eluniversal.com.mx…).", json!({"url": s("URL de la página")}), &["url"]),
+        f("correo_y_contactos", "Pedidos sobre el correo electrónico, los contactos, las notas o el calendario de IureDesk en este equipo: buscar, leer o resumir correos, dictar o redactar un correo, contestar uno, buscar el teléfono o correo de alguien, crear una nota.", json!({"pedido": s("el pedido completo, con nombres tal como se dijeron")}), &["pedido"]),
         f("expedientes_y_apps", "Pedidos sobre las apps de Iurefficient en este equipo: archivos de expedientes en IureDav (listar, buscar, abrir, leer, resumir), PDF con IureOCR (OCR, leer páginas, girar o quitar páginas), grabar o transcribir reuniones con IureTranscribe, abrir o crear documentos en IureEditor.", json!({"pedido": s("el pedido completo, con nombres de archivo o carpeta tal como se dijeron")}), &["pedido"]),
     ]);
     if con_claude {
@@ -259,6 +285,7 @@ pub fn normalizar_nombres(instruccion: &str) -> String {
         ("iuredav", "IureDav", 2),
         ("iuretranscribe", "IureTranscribe", 3),
         ("iureocr", "IureOCR", 2),
+        ("iuredesk", "IureDesk", 2),
     ];
     let plano = |w: &str| -> Vec<char> {
         w.to_lowercase()
@@ -376,6 +403,8 @@ pub enum Destino {
     Iurefficient,
     /// Apps de escritorio de la suite: IureDav, IureOCR, IureTranscribe, IureEditor.
     Apps,
+    /// IureDesk: correo, contactos y notas de este equipo.
+    IureDesk,
     /// Trabajo en el sistema operativo: a Claude Code.
     Sistema,
     /// Herramientas básicas del escritorio (abrir, web, volumen, teclas…).
@@ -392,6 +421,8 @@ el CRM (oportunidades, prospectos), documentos guardados en la instancia; tambi�
 apps: las apps de escritorio de la suite en este equipo: archivos de la unidad IureDav (buscar, abrir, leer, resumir), \
 PDF (OCR, leer, girar o quitar páginas), GRABAR o TRANSCRIBIR una reunión, junta, audiencia o llamada con IureTranscribe \
 («transcribe la junta», «graba la reunión», «detén la grabación»), abrir o crear documentos en IureEditor.\n\
+iuredesk: el correo electrónico de la persona (buscar, leer o resumir correos, dictar, redactar o contestar un correo), \
+sus contactos (teléfono o correo de alguien), sus notas, y el calendario o las tareas cuando nombra IureDesk.\n\
 sistema: trabajo en el sistema operativo con comandos: crear o editar scripts o programas, instalar o configurar, \
 mover, copiar, renombrar, comprimir o borrar archivos, procesos, espacio en disco.\n\
 escritorio: abrir una aplicación o una página web, buscar en internet, noticias o encabezados de un sitio, volumen, \
@@ -443,6 +474,13 @@ impl Agente {
                 }
                 v
             }
+            Modo::Desk => {
+                let mut v = crate::desk::herramientas().unwrap_or_else(|_| json!([]));
+                if let Some(a) = v.as_array_mut() {
+                    a.extend(crate::desk::herramientas_propias());
+                }
+                v
+            }
         }
     }
 
@@ -451,6 +489,7 @@ impl Agente {
             Modo::Principal => sistema(),
             Modo::Suite => sistema_suite(),
             Modo::Iure => sistema_iure(),
+            Modo::Desk => sistema_desk(),
         }
     }
 
@@ -483,6 +522,7 @@ impl Agente {
         for (etiqueta, d) in [
             ("iurefficient", Destino::Iurefficient),
             ("apps", Destino::Apps),
+            ("iuredesk", Destino::IureDesk),
             ("sistema", Destino::Sistema),
             ("escritorio", Destino::Escritorio),
             ("conversacion", Destino::Conversacion),
@@ -580,6 +620,7 @@ impl Agente {
                     match d {
                         Destino::Iurefficient => Some("consultar_iurefficient"),
                         Destino::Apps => Some("expedientes_y_apps"),
+                        Destino::IureDesk => Some("correo_y_contactos"),
                         Destino::Sistema if self.delegar.is_some() => {
                             let r = self.delegar.as_ref().unwrap()(instruccion)?;
                             return Ok(Informe { acciones: vec![format!("pedir_a_claude → {r}")], respuesta: primera_mayuscula(&r) + "." });
@@ -590,7 +631,9 @@ impl Agente {
                 // sin respuesta del modelo: palabras clave
                 Err(e) => {
                     paso(&format!("enrutador: {e:#}; se usan palabras clave"));
-                    if es_de_iurefficient(instruccion) {
+                    if crate::desk::es_de_iuredesk(instruccion) {
+                        Some("correo_y_contactos")
+                    } else if es_de_iurefficient(instruccion) {
                         Some("consultar_iurefficient")
                     } else if es_de_la_suite(instruccion) {
                         Some("expedientes_y_apps")
@@ -633,6 +676,9 @@ impl Agente {
         if self.modo == Modo::Iure {
             // sin conexión no tiene sentido llamar al modelo
             crate::iure::herramientas()?;
+        }
+        if self.modo == Modo::Desk {
+            crate::desk::herramientas()?;
         }
         let mut inf = Informe::default();
         let mut ultimo = String::new();
@@ -736,6 +782,24 @@ impl Agente {
                 let inf = sub.ejecutar(&s("pedido")?, &[], |_| {})?;
                 let hecho = if inf.acciones.is_empty() { String::new() } else { format!(" (hice: {})", inf.acciones.join("; ")) };
                 Ok(format!("{}{hecho}", inf.respuesta))
+            }
+            "correo_y_contactos" => {
+                let mut sub = Agente::new(self.cfg.clone(), None, self.voz.clone());
+                sub.modo = Modo::Desk;
+                // las escrituras se confirman y el correo se dicta con los mismos ganchos
+                sub.ganchos = self.ganchos.clone();
+                let inf = sub.ejecutar(&s("pedido")?, &[], |_| {})?;
+                let hecho = if inf.acciones.is_empty() { String::new() } else { format!(" (hice: {})", inf.acciones.join("; ")) };
+                Ok(format!("{}{hecho}", inf.respuesta))
+            }
+            "redactar_correo" => {
+                let g = self.ganchos.clone();
+                let escuchar = move |p: &str, pausa: f64| g.as_ref().map(|g| (g.escuchar)(p, pausa)).unwrap_or_default();
+                crate::desk::redactar(a["para"].as_str(), a["asunto"].as_str(), a["cuerpo"].as_str(), &escuchar)
+            }
+            n if self.modo == Modo::Desk && crate::desk::es_herramienta(n) => {
+                let g = self.ganchos.clone();
+                crate::desk::llamar(n, a, &move |d: &str| g.as_ref().is_some_and(|g| (g.confirmar)(d)))
             }
             "consultar_crm" => crate::iure::crm(
                 a["tipo"].as_str().unwrap_or("oportunidades"),
@@ -1028,6 +1092,9 @@ mod pruebas {
             ("¿qué juntas tengo mañana?", Destino::Iurefficient),
             ("¿cuáles son las oportunidades abiertas?", Destino::Iurefficient),
             ("busca el contrato de Heralva en la unidad", Destino::Apps),
+            ("dicta un correo para Ana López", Destino::IureDesk),
+            ("¿tengo correos nuevos de Pérez?", Destino::IureDesk),
+            ("¿cuál es el teléfono de Juan Ramón?", Destino::IureDesk),
             ("crea un script que respalde mis documentos", Destino::Sistema),
             ("abre el New York Times", Destino::Escritorio),
             ("¿quién fue Benito Juárez?", Destino::Conversacion),
@@ -1045,6 +1112,7 @@ mod pruebas {
         assert_eq!(normalizar_nombres("abre Yurefficient."), "abre Iurefficient.");
         assert_eq!(normalizar_nombres("los archivos de iuredab"), "los archivos de IureDav");
         assert_eq!(normalizar_nombres("eficiente y suficiente"), "eficiente y suficiente");
+        assert_eq!(normalizar_nombres("abre Yuredesk"), "abre IureDesk");
         assert!(es_de_iurefficient("Dime cuáles son las oportunidades abiertas"));
         assert!(!es_de_la_suite("Dime cuáles son las oportunidades abiertas"));
         assert!(es_de_la_suite("¿qué hay en la unidad de Juárez?"));
@@ -1065,6 +1133,7 @@ mod pruebas {
         assert!(!es_fin_dictado("se terminó el día"));
         assert!(!es_dictar("termina el dictado"));
         assert!(!es_dictar("abre la calculadora"));
+        assert!(!es_dictar("te voy a dictar un correo para Ana"));
     }
 
     #[test]
