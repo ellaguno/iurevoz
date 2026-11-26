@@ -209,7 +209,7 @@ jobs:
           # llama-server de la carpeta del paquete instalado (WindowsApps), lanzado por IureVoz
           # como lo hace la app: desde fuera del paquete Windows no deja ejecutarlo (acceso denegado)
           $r = Iurevoz @('llama-server', '--version'); Write-Output $r
-          if ("$r" -notmatch '→ \[0\]' -or "$r" -notmatch "version: $($env:LLAMA_VERSION.TrimStart('b'))") { $fallas += 'llama-server --version no corrió desde el paquete' }
+          if ("$r" -notmatch '→ \[0\]' -or "$r" -notmatch "build $($env:LLAMA_VERSION.TrimStart('b'))") { $fallas += 'llama-server --version no corrió desde el paquete' }
           $r = Iurevoz @('inicio'); Write-Output $r
           if ("$r" -notmatch 'StartupTask del paquete: inactivo') { $fallas += 'la StartupTask no empieza apagada' }
           $r = Iurevoz @('inicio', 'si'); Write-Output $r
