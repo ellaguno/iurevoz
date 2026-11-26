@@ -3,7 +3,7 @@
 Versiones de IureVoz. El flujo `.github/workflows/release.yml` toma las notas de la
 sección `## vX.Y.Z` al subir la etiqueta.
 
-## Sin publicar
+## v0.5.0 — 2026-11-26
 
 ### Agregado
 - **IureDesk por voz**: las instrucciones sobre correo, contactos y notas van a un
@@ -14,7 +14,16 @@ sección `## vX.Y.Z` al subir la etiqueta.
   silencio, con la puntuación dictada) y abre el redactor de IureDesk con todo listo para
   revisarlo y enviarlo. Nada se envía nunca. Los borradores, eventos y notas se confirman
   antes, con un resumen armado en código. IureDesk se busca en el PATH y donde lo dejan
-  sus paquetes; `IUREVOZ_IUREDESK` fuerza la ruta.
+  sus paquetes (incluida la AppImage de iureapps); `IUREVOZ_IUREDESK` fuerza la ruta.
+- **Paquete MSIX para Microsoft Store** (Windows): el flujo de Actions lo arma, lo
+  instala firmado con un certificado de prueba y lo prueba (alias `iurevoz`, inicio con
+  Windows, ventana). Sale como artefactos `msix-store` (sin firmar, para Partner Center) y
+  `msix-prueba`; no va en la release. Trae `llama-server` incluido y, empaquetada, nunca
+  descarga ejecutables (los modelos sí). Desde la Store, *Ajustes → Inicio* usa la
+  StartupTask del paquete.
+- Subcomandos `iurevoz --version` (dice también qué `llama-server` usa) e
+  `iurevoz inicio [si|no]`.
+- `PRIVACY.md` en español e inglés.
 
 ## v0.4.0 — 2026-11-13
 
