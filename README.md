@@ -42,10 +42,15 @@ El job de Windows de `release.yml` genera dos artefactos (no van a la release):
   instalarlo a mano: importar el `.cer` en *Equipo local → Personas de confianza* y abrir el
   `.msix`.
 
-Lleva lo mismo que instala el `.exe` de Inno Setup (`iurevoz.exe`, `README.md`, `LICENSE.md`).
-Antes de subirlo, el flujo instala la copia de prueba y, dentro del paquete, comprueba
-`iurevoz --version`, que la StartupTask empiece apagada y se encienda y apague con
-`iurevoz inicio si|no`, y que la ventana abra; luego la desinstala.
+Lleva lo mismo que instala el `.exe` de Inno Setup (`iurevoz.exe`, `README.md`, `LICENSE.md`)
+y, en `llama\`, el `llama-server.exe` de llama.cpp con sus DLL y licencias: la misma versión
+que la app descarga en las demás instalaciones (`VERSION` en `src/llm_local.rs` y
+`LLAMA_VERSION` en `release.yml`, que hay que cambiar juntas; el flujo verifica el SHA256 del
+`.zip` de llama.cpp y falla si no coinciden). Antes de subirlo, el flujo instala la copia de
+prueba y, dentro del paquete, comprueba `iurevoz --version` (que además dice si ve el
+llama-server del paquete), `llama\llama-server.exe --version` desde la carpeta instalada, que
+la StartupTask empiece apagada y se encienda y apague con `iurevoz inicio si|no`, y que la
+ventana abra; luego la desinstala.
 
 La identidad del paquete sale de Partner Center (*Identidad del producto*) y va en tres
 variables del repo (*Settings → Secrets and variables → Actions → Variables*):
@@ -69,8 +74,9 @@ Diferencias con la versión del instalador:
 - **Línea de comandos:** el alias `iurevoz` (en `%LOCALAPPDATA%\Microsoft\WindowsApps`) da los
   subcomandos y es la ruta que se registra en Claude Code como servidor MCP, porque la carpeta
   del paquete cambia con cada versión.
-- **Actualizaciones:** las hace la Store. IureVoz no se actualiza solo en ninguna versión; sólo
-  descarga modelos de voz y de lenguaje (y `llama-server`), que la política de la Store permite.
+- **Actualizaciones:** las hace la Store. IureVoz no se actualiza solo en ninguna versión.
+  Empaquetada nunca descarga ejecutables: usa el `llama-server` del paquete y sólo descarga
+  modelos de voz y de lenguaje (datos), que la política de la Store permite.
 - **Avisos:** usan la identidad del paquete en lugar del acceso directo del instalador.
 
 La versión del paquete es la de `Cargo.toml` con el primer número más 1 y un `.0` al final

@@ -101,13 +101,17 @@ jobs:
           path: target/instalador/*
 
       # Paquete para Microsoft Store (la Store lo firma), con lo mismo que instala el .exe de
-      # Inno Setup (iurevoz.exe, README.md, LICENSE.md). La identidad sale de Partner Center
+      # Inno Setup (iurevoz.exe, README.md, LICENSE.md) más llama-server en `llama\`. La identidad sale de Partner Center
       # (Identidad del producto) y va en variables del repo; sin ellas se usan valores de prueba.
       # Además, una copia firmada con un certificado de prueba que se instala, se prueba y se
       # desinstala aquí mismo. Ninguno de los dos va a la release.
       - name: Paquete MSIX (Microsoft Store)
         shell: pwsh
         env:
+          # llama-server va dentro del paquete: la Store no permite que la app descargue
+          # ejecutables. La misma versión que baja la app (VERSION en src/llm_local.rs).
+          LLAMA_VERSION: b11756
+          LLAMA_SHA256: 75ce69fdda503c3d6d3b3401f61369bd072194746ec65fbbc5fd7e749edd2914
           MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
           MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
           MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
@@ -140,6 +144,20 @@ jobs:
           New-Item -ItemType Directory -Force $root, msix\store, msix\prueba | Out-Null
           Copy-Item -Recurse packaging\msix\Assets "$root\Assets"
           Copy-Item target\release\iurevoz.exe, README.md, LICENSE.md $root
+
+          # llama.cpp (Vulkan): llama-server.exe, sus DLL y licencias, en `llama\`.
+          $llamaVer = (Select-String -Path src\llm_local.rs -Pattern '^const VERSION: &str = "([^"]+)"').Matches.Groups[1].Value
+          if ($llamaVer -ne $env:LLAMA_VERSION) { Write-Output "::error::src/llm_local.rs usa llama.cpp $llamaVer y el flujo $env:LLAMA_VERSION"; exit 1 }
+          $zip = Join-Path $env:RUNNER_TEMP 'llama.zip'
+          Invoke-WebRequest "https://github.com/ggml-org/llama.cpp/releases/download/$env:LLAMA_VERSION/llama-$env:LLAMA_VERSION-bin-win-vulkan-x64.zip" -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:LLAMA_SHA256) { Write-Output "::error::SHA256 de llama.cpp: $hash (se esperaba $env:LLAMA_SHA256)"; exit 1 }
+          $llamaTmp = Join-Path $env:RUNNER_TEMP 'llama'
+          Expand-Archive $zip -DestinationPath $llamaTmp -Force
+          New-Item -ItemType Directory -Force "$root\llama" | Out-Null
+          Copy-Item "$llamaTmp\llama-server.exe", "$llamaTmp\*.dll", "$llamaTmp\LICENSE-*" "$root\llama"
+          Invoke-WebRequest "https://raw.githubusercontent.com/ggml-org/llama.cpp/$env:LLAMA_VERSION/LICENSE" -OutFile "$root\llama\LICENSE-llama.cpp"
+          Get-ChildItem "$root\llama" | Measure-Object -Property Length -Sum | ForEach-Object { Write-Output "llama.cpp $env:LLAMA_VERSION en el paquete: $($_.Count) archivos, $([math]::Round($_.Sum / 1MB, 1)) MB" }
           $manifest = Get-Content packaging\msix\AppxManifest.xml -Raw
           $manifest = $manifest.Replace('@IDENTITY_NAME@', $identityXml).Replace('@PUBLISHER@', $publisherXml)
           $manifest = $manifest.Replace('@PUBLISHER_DISPLAY_NAME@', $displayXml).Replace('@VERSION@', $version)
@@ -187,6 +205,16 @@ jobs:
           $fallas = @()
           $r = Iurevoz @('--version'); Write-Output $r
           if ("$r" -notmatch [regex]::Escape("iurevoz $cargo")) { $fallas += 'la versión no respondió dentro del paquete' }
+          if ("$r" -notmatch [regex]::Escape("llama.cpp $env:LLAMA_VERSION`: en el paquete")) { $fallas += 'la app no ve el llama-server del paquete' }
+          # llama-server desde la carpeta del paquete instalado (WindowsApps)
+          $llamaExe = Join-Path $pkg.InstallLocation 'llama\llama-server.exe'
+          $out = Join-Path $env:RUNNER_TEMP 'llama-salida.txt'
+          $err = Join-Path $env:RUNNER_TEMP 'llama-error.txt'
+          $p = Start-Process -FilePath $llamaExe -ArgumentList '--version' -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          if (-not $p.WaitForExit(60000)) { $p.Kill() }
+          $r = ("$(Get-Content $out -Raw)" + "$(Get-Content $err -Raw)").Trim()
+          Write-Output "$llamaExe --version → [$($p.ExitCode)] $r"
+          if ($p.ExitCode -ne 0 -or "$r" -notmatch "version: $($env:LLAMA_VERSION.TrimStart('b'))") { $fallas += 'llama-server --version no corrió desde el paquete' }
           $r = Iurevoz @('inicio'); Write-Output $r
           if ("$r" -notmatch 'StartupTask del paquete: inactivo') { $fallas += 'la StartupTask no empieza apagada' }
           $r = Iurevoz @('inicio', 'si'); Write-Output $r

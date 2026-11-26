@@ -80,7 +80,10 @@ fn main() -> Result<()> {
     plataforma::completar_path();
     match args.first().map(String::as_str) {
         Some("-h" | "--help" | "ayuda") => print!("{AYUDA}"),
-        Some("-V" | "--version") => println!("iurevoz {}", env!("CARGO_PKG_VERSION")),
+        Some("-V" | "--version") => {
+            println!("iurevoz {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", llm_local::describir_binario());
+        }
         Some("inicio") => {
             match args.get(1).map(String::as_str) {
                 Some("si" | "sí") => bandeja::arranque::fijar(true)?,

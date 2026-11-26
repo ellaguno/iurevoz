@@ -27,9 +27,10 @@ nube, Claude Code o tu instancia de Iurefficient).
 ### Qué sale de tu equipo
 1. **Descarga de modelos.** La primera vez que los necesitas, IureVoz descarga los modelos de voz
    desde GitHub (`github.com/k2-fsa/sherpa-onnx`) y, si usas el modelo de lenguaje local, el
-   servidor `llama-server` de llama.cpp (`github.com/ggml-org/llama.cpp`) y el modelo desde Hugging
-   Face (`huggingface.co`). No envía datos tuyos; esos sitios reciben, como en cualquier conexión,
-   tu dirección IP.
+   modelo desde Hugging Face (`huggingface.co`) y el servidor `llama-server` de llama.cpp
+   (`github.com/ggml-org/llama.cpp`); en la versión de la Microsoft Store `llama-server` viene
+   incluido en la app y no se descarga. No envía datos tuyos; esos sitios reciben, como en
+   cualquier conexión, tu dirección IP.
 2. **Modelo de lenguaje (opcional).** La corrección del dictado y el modo de órdenes usan un modelo
    de lenguaje (IA generativa). Por omisión es uno **local** (`llama-server` en tu equipo), y el
    texto no sale. Si eliges otro servicio en *Ajustes*, IureVoz le envía el texto dictado o la
@@ -110,10 +111,11 @@ language model, Claude Code or your Iurefficient instance).
 
 ### What leaves your computer
 1. **Model downloads.** The first time they are needed, IureVoz downloads the speech models from
-   GitHub (`github.com/k2-fsa/sherpa-onnx`) and, if you use the local language model, llama.cpp's
-   `llama-server` (`github.com/ggml-org/llama.cpp`) and the model from Hugging Face
-   (`huggingface.co`). It sends no data about you; as with any connection, those sites receive your
-   IP address.
+   GitHub (`github.com/k2-fsa/sherpa-onnx`) and, if you use the local language model, the model
+   from Hugging Face (`huggingface.co`) and llama.cpp's `llama-server`
+   (`github.com/ggml-org/llama.cpp`); in the Microsoft Store version `llama-server` ships with the
+   app and is not downloaded. It sends no data about you; as with any connection, those sites
+   receive your IP address.
 2. **Language model (optional).** Dictation correction and command mode use a language model
    (generative AI). By default it is a **local** one (`llama-server` on your computer) and the text
    stays there. If you choose another service in *Settings*, IureVoz sends it the dictated text or

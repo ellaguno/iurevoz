@@ -16,7 +16,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::dir_datos;
 
-/// Versión de llama.cpp probada con la app.
+/// Versión de llama.cpp probada con la app. El paquete MSIX lleva esta misma versión (la fija
+/// `LLAMA_VERSION` en `.github/workflows/release.yml`; hay que cambiar las dos a la vez).
 const VERSION: &str = "b11756";
 
 /// Modelos disponibles: (clave, repositorio en Hugging Face, archivo, descripción).
@@ -34,12 +35,30 @@ fn modelo(clave: &str) -> Result<&'static (&'static str, &'static str, &'static 
     MODELOS.iter().find(|m| m.0 == clave).with_context(|| format!("modelo local desconocido: {clave}"))
 }
 
+/// Instalada desde Microsoft Store, `llama-server` viene dentro del paquete (carpeta `llama`
+/// junto a `iurevoz.exe`): la Store no permite descargar ejecutables, sólo los modelos.
 fn ruta_binario() -> PathBuf {
+    if crate::plataforma::empaquetada() {
+        if let Some(d) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+            return d.join("llama").join("llama-server.exe");
+        }
+    }
     dir().join(format!("llama-{VERSION}")).join(if cfg!(windows) { "llama-server.exe" } else { "llama-server" })
 }
 
 fn ruta_modelo(clave: &str) -> Result<PathBuf> {
     Ok(dir().join("modelos").join(modelo(clave)?.2))
+}
+
+/// «llama.cpp b11756: en el paquete», para `iurevoz --version`.
+pub fn describir_binario() -> String {
+    let donde = match (ruta_binario().exists(), crate::plataforma::empaquetada()) {
+        (true, true) => "en el paquete",
+        (true, false) => "descargado",
+        (false, true) => "falta en el paquete",
+        (false, false) => "sin descargar",
+    };
+    format!("llama.cpp {VERSION}: {donde} ({})", ruta_binario().display())
 }
 
 /// (binario listo, modelo listo)
@@ -50,6 +69,9 @@ pub fn estado(clave: &str) -> (bool, bool) {
 /// Descarga lo que falte. `progreso` recibe (qué, fracción 0..1).
 pub fn preparar(clave: &str, progreso: &dyn Fn(&str, f32)) -> Result<()> {
     std::fs::create_dir_all(dir().join("modelos"))?;
+    if !ruta_binario().exists() && crate::plataforma::empaquetada() {
+        bail!("falta llama-server en el paquete de IureVoz; reinstala la app desde Microsoft Store");
+    }
     if !ruta_binario().exists() {
         let paquete = if cfg!(windows) {
             "win-vulkan-x64.zip"
