@@ -206,15 +206,10 @@ jobs:
           $r = Iurevoz @('--version'); Write-Output $r
           if ("$r" -notmatch [regex]::Escape("iurevoz $cargo")) { $fallas += 'la versión no respondió dentro del paquete' }
           if ("$r" -notmatch [regex]::Escape("llama.cpp $env:LLAMA_VERSION`: en el paquete")) { $fallas += 'la app no ve el llama-server del paquete' }
-          # llama-server desde la carpeta del paquete instalado (WindowsApps)
-          $llamaExe = Join-Path $pkg.InstallLocation 'llama\llama-server.exe'
-          $out = Join-Path $env:RUNNER_TEMP 'llama-salida.txt'
-          $err = Join-Path $env:RUNNER_TEMP 'llama-error.txt'
-          $p = Start-Process -FilePath $llamaExe -ArgumentList '--version' -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
-          if (-not $p.WaitForExit(60000)) { $p.Kill() }
-          $r = ("$(Get-Content $out -Raw)" + "$(Get-Content $err -Raw)").Trim()
-          Write-Output "$llamaExe --version → [$($p.ExitCode)] $r"
-          if ($p.ExitCode -ne 0 -or "$r" -notmatch "version: $($env:LLAMA_VERSION.TrimStart('b'))") { $fallas += 'llama-server --version no corrió desde el paquete' }
+          # llama-server de la carpeta del paquete instalado (WindowsApps), lanzado por IureVoz
+          # como lo hace la app: desde fuera del paquete Windows no deja ejecutarlo (acceso denegado)
+          $r = Iurevoz @('llama-server', '--version'); Write-Output $r
+          if ("$r" -notmatch '→ \[0\]' -or "$r" -notmatch "version: $($env:LLAMA_VERSION.TrimStart('b'))") { $fallas += 'llama-server --version no corrió desde el paquete' }
           $r = Iurevoz @('inicio'); Write-Output $r
           if ("$r" -notmatch 'StartupTask del paquete: inactivo') { $fallas += 'la StartupTask no empieza apagada' }
           $r = Iurevoz @('inicio', 'si'); Write-Output $r

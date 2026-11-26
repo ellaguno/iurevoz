@@ -61,6 +61,17 @@ pub fn describir_binario() -> String {
     format!("llama.cpp {VERSION}: {donde} ({})", ruta_binario().display())
 }
 
+/// `iurevoz llama-server ARGS…`: corre el llama-server que usa la app, tal como lo lanza ella
+/// (en la versión de la Store, desde dentro del paquete: por fuera Windows no deja ejecutarlo).
+pub fn ejecutar_binario(args: &[String]) -> Result<i32> {
+    let bin = ruta_binario();
+    if !bin.exists() {
+        bail!("{}", describir_binario());
+    }
+    let estado = Command::new(&bin).args(args).status().with_context(|| format!("no pude ejecutar {}", bin.display()))?;
+    Ok(estado.code().unwrap_or(1))
+}
+
 /// (binario listo, modelo listo)
 pub fn estado(clave: &str) -> (bool, bool) {
     (ruta_binario().exists(), ruta_modelo(clave).is_ok_and(|p| p.exists()))

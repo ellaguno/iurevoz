@@ -59,6 +59,7 @@ Uso:
   iurevoz entrenar-palabra [frase]  entrena el detector dedicado de la palabra clave
   iurevoz vigilia A.wav         simula «siempre escuchando» con un archivo
   iurevoz preparar-llm [modelo] descarga llama.cpp y el modelo local (gemma4-e2b, qwen3.5-4b, qwen3.5-2b)
+  iurevoz llama-server [args]    corre el llama-server de la app (p. ej. --version)
   iurevoz conectar-iurefficient crea el token de IureVoz con la sesión de la suite
   iurevoz decir \"texto\" [--voz CLAVE] [--guardar A.wav]
                                 habla con la voz local (claves: piper-ald, piper-claude,
@@ -119,6 +120,7 @@ fn main() -> Result<()> {
             println!("llama-server listo en {:.1} s: {url}", t.elapsed().as_secs_f32());
             llm_local::apagar();
         }
+        Some("llama-server") => std::process::exit(llm_local::ejecutar_binario(&args[1..])?),
         Some("conectar-iurefficient") => println!("{}", iure::conectar()?),
         #[cfg(target_os = "linux")]
         Some("instalar-atajos") => println!("{}", atajos_gnome::instalar()?),

@@ -48,7 +48,8 @@ que la app descarga en las demás instalaciones (`VERSION` en `src/llm_local.rs`
 `LLAMA_VERSION` en `release.yml`, que hay que cambiar juntas; el flujo verifica el SHA256 del
 `.zip` de llama.cpp y falla si no coinciden). Antes de subirlo, el flujo instala la copia de
 prueba y, dentro del paquete, comprueba `iurevoz --version` (que además dice si ve el
-llama-server del paquete), `llama\llama-server.exe --version` desde la carpeta instalada, que
+llama-server del paquete), `iurevoz llama-server --version` (lo lanza desde la carpeta
+instalada como lo hace la app; desde fuera del paquete Windows no deja ejecutarlo), que
 la StartupTask empiece apagada y se encienda y apague con `iurevoz inicio si|no`, y que la
 ventana abra; luego la desinstala.
 
